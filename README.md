@@ -61,3 +61,10 @@ The model is pre-configured with validated parameters:
 - **Non-member rate**: $10/hour
 - **Programming revenue**: $38,000/month
 - **Ancillary revenue**: $32,000/month
+
+## Documentation
+
+See the `/docs` folder for additional documentation:
+- [TODO.md](docs/TODO.md) - Next steps and deployment tasks
+- [PROJECT_STRUCTURE.md](docs/PROJECT_STRUCTURE.md) - Codebase organization
+- [REFACTOR_SUGGESTIONS.md](docs/REFACTOR_SUGGESTIONS.md) - Architecture decisions
