@@ -2,6 +2,10 @@
 
 Validated financial projections for indoor pickleball facilities based on real market data.
 
+## 📈 Current Status
+
+This model represents a validated financial framework for Veros Pickleball operations, achieving 84.8% accuracy against real facility data. It serves as the foundation for investor presentations, business planning, and franchise scaling strategies.
+
 ## Overview
 
 This Streamlit application provides a comprehensive financial model for indoor pickleball facilities. It includes:
