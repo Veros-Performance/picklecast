@@ -27,7 +27,7 @@ def check_password():
         """Checks whether a password entered by the user is correct."""
         # You can change this password to whatever you want
         # For production, consider using environment variables or a more secure method
-        correct_password_hash = hashlib.sha256("picklecast2024".encode()).hexdigest()
+        correct_password_hash = hashlib.sha256("richmondneedsmorepickle".encode()).hexdigest()
         entered_password_hash = hashlib.sha256(st.session_state["password"].encode()).hexdigest()
         
         if entered_password_hash == correct_password_hash:
