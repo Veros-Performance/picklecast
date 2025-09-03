@@ -1,6 +1,7 @@
 """
 Indoor Pickleball Facility Financial Projections for SBA Loan Application
 Generates 2-year financial projections with dynamic scenario modeling
+Last updated: 2025-09-03
 """
 
 import streamlit as st
