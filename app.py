@@ -68,7 +68,7 @@ def check_password():
 if not check_password():
     st.stop()
 
-st.title("🎾 Indoor Pickleball Facility - SBA Loan Financial Projections")
+st.title("🎾 Indoor Pickleball Facility - SBA Loan Financial Projections [v2]")
 st.markdown("### 2-Year Financial Model for SBA Loan Application")
 st.info("""
 **Revenue Streams:** Memberships • Court Rentals • Leagues • Corporate Events • Tournaments • Retail Pop-up Store
