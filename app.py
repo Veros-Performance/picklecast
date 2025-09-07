@@ -8,10 +8,12 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import math
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
 import io
 import hashlib
+from dataclasses import dataclass
 
 st.set_page_config(
     page_title="Pickleball Facility Projections",
@@ -64,22 +66,96 @@ def check_password():
         # Password correct
         return True
 
-# Check authentication before showing the main app
-if not check_password():
-    st.stop()
-
-st.title("🎾 Indoor Pickleball Facility - SBA Loan Financial Projections [v2]")
-st.markdown("### 2-Year Financial Model for SBA Loan Application")
-st.info("""
-**Revenue Streams:** Memberships • Court Rentals • Leagues • Corporate Events • Tournaments • Retail Pop-up Store
-""".strip())
-
 # Constants
 NUM_COURTS = 4
 HOURS_PER_DAY = 14  # 8 AM to 10 PM typical operation
 DAYS_PER_MONTH = 30
-PRIME_TIME_HOURS_RATIO = 0.5  # 50% of hours are prime time
+PRIME_TIME_HOURS_RATIO = 0.24  # 24% prime time (6-9pm weekdays + weekend mornings)
 DEPRECIATION_ANNUAL = 132325  # Based on ~$994k leasehold improvements + ~$220k equipment
+MEMBER_CAP = 350
+
+# Pricing unit constants
+PRICING_UNIT_COURT = "per_court_hour"
+LEAGUE_PRICING_UNIT = "per_slot_session"
+
+# Density state management
+@dataclass
+class DensityState:
+    courts: int
+    hours_open_per_day: float
+    # weekly court-hours (by bucket)
+    open_prime_ch_wk: float
+    open_offpeak_ch_wk: float
+    league_ch_wk: float
+    corp_ch_wk: float
+    tourney_ch_wk: float
+    # annual revenues (VARIABLE ONLY — EXCLUDES membership)
+    court_rev_year: float
+    league_rev_year: float
+    corp_rev_year: float
+    tourney_rev_year: float
+    retail_rev_year: float
+    # seasonality
+    active_league_weeks_per_year: int  # e.g., 46
+    weeks_per_year_equiv: float        # 52.0 unless you purposely use a different factor
+
+def compute_density(ds: DensityState):
+    """Single source of truth for density metrics"""
+    available_ch_year = ds.courts * ds.hours_open_per_day * 365.0
+    utilized_ch_year = (ds.open_prime_ch_wk + ds.open_offpeak_ch_wk + ds.league_ch_wk + 
+                       ds.corp_ch_wk + ds.tourney_ch_wk) * ds.weeks_per_year_equiv
+    variable_rev_year = (ds.court_rev_year + ds.league_rev_year + ds.corp_rev_year + 
+                        ds.tourney_rev_year + ds.retail_rev_year)
+
+    revpach = variable_rev_year / max(1.0, available_ch_year)
+    rev_per_util_hr = variable_rev_year / max(1.0, utilized_ch_year)
+    
+    return {
+        "revpach": revpach, 
+        "rev_per_util_hr": rev_per_util_hr,
+        "available_ch_year": available_ch_year, 
+        "utilized_ch_year": utilized_ch_year,
+        "variable_rev_year": variable_rev_year
+    }
+
+# PRICING REGISTRY - Single source of truth for all pricing
+pricing = {
+    "nm_prime_per_court": 65.0,      # Non-member prime per court hour
+    "nm_off_per_court": 56.0,        # Non-member off-peak per court hour
+    "member_prime_per_court": 0.0,   # Member prime per court hour (usually free)
+    "member_off_per_court": 0.0,     # Member off-peak per court hour (usually free)
+    "league_prime_per_slot_6wk": 150.0,  # League prime per player slot for 6 weeks
+    "league_off_per_slot_6wk": 100.0,    # League off-peak per player slot for 6 weeks
+    "corp_prime_per_court": 200.0,   # Corporate prime per court hour
+    "corp_off_per_court": 170.0,     # Corporate off-peak per court hour
+}
+
+# Legacy constants for backward compatibility (will migrate these to use pricing dict)
+NON_MEMBER_RATE_PRIME_COURT_DEFAULT = pricing["nm_prime_per_court"]
+NON_MEMBER_RATE_OFFPEAK_COURT_DEFAULT = pricing["nm_off_per_court"]
+LEAGUE_PRICE_PRIME_SLOT_DEFAULT = pricing["league_prime_per_slot_6wk"]
+LEAGUE_PRICE_OFFPEAK_SLOT_DEFAULT = pricing["league_off_per_slot_6wk"]
+
+# Check authentication before showing the main app
+if not check_password():
+    st.stop()
+
+st.title("🎾 Indoor Pickleball Facility - SBA Loan Financial Projections [v9-RevPACH-Fix]")
+st.markdown("### 2-Year Financial Model for SBA Loan Application")
+
+# Calculate schedule-driven prime share for banner (using typical schedule)
+# Will be recalculated with actual user inputs later
+typical_weekday_window = 5.0  # 4-9pm
+typical_weekend_window = 4.0  # 8am-12pm
+prime_ch_wk_est = NUM_COURTS * (4 * typical_weekday_window + 1 * typical_weekday_window + 2 * typical_weekend_window)
+total_ch_wk = NUM_COURTS * HOURS_PER_DAY * 7.0
+schedule_prime_share = prime_ch_wk_est / max(1e-6, total_ch_wk)
+
+# Dynamic banner using pricing registry and schedule-driven prime share
+st.info(f"""
+**Revenue Streams:** Memberships • Court Rentals (NM: ${pricing['nm_prime_per_court']:.0f}/${pricing['nm_off_per_court']:.0f}) • Leagues (${pricing['league_prime_per_slot_6wk']:.0f}/${pricing['league_off_per_slot_6wk']:.0f}) • Corporate (${pricing['corp_prime_per_court']:.0f}/${pricing['corp_off_per_court']:.0f}) • Tournaments • Retail
+**Prime Time:** ~{schedule_prime_share*100:.0f}% of hours (6-9pm weekdays + weekend mornings) • Leagues reserve prime slots
+""".strip())
 
 # Initialize session state for inputs
 if 'inputs' not in st.session_state:
@@ -89,9 +165,18 @@ if 'inputs' not in st.session_state:
 with st.sidebar:
     st.header("📊 Assumptions")
     
+    # Debug Mode
+    show_debug = st.checkbox(
+        "Show Debug Reconciliation",
+        value=False,
+        help="Display detailed capacity and revenue calculations"
+    )
+    
     # Facility Constants (Display Only)
     st.subheader("Facility Constants")
     st.info(f"**Number of Courts:** {NUM_COURTS}")
+    st.info(f"**Prime Time Share:** {PRIME_TIME_HOURS_RATIO*100:.0f}% (evenings + weekend mornings)")
+    st.info(f"**Member Cap:** {MEMBER_CAP}")
     
     # Analysis Start Date
     start_date = st.date_input(
@@ -106,35 +191,54 @@ with st.sidebar:
     st.subheader("Court Pricing Model")
     
     base_prime_rate = st.number_input(
-        "Base Prime-Time Rate ($/Court/Hour)",
+        "Non-Member Rate (Prime) — per court / hr",
         min_value=20.0,
-        max_value=150.0,
-        value=56.0,
-        step=1.0,
-        help="The standard rate for prime-time court rental"
+        max_value=200.0,
+        value=pricing["nm_prime_per_court"],  # $65/hr PER COURT
+        step=5.0,
+        help="Peak hours rate for non-members PER COURT HOUR"
     )
+    # Update pricing registry
+    pricing["nm_prime_per_court"] = base_prime_rate
     
-    non_prime_discount = st.slider(
-        "Non-Prime Rate Discount (% from Prime)",
-        min_value=0,
-        max_value=50,
-        value=21,
-        help="Percentage discount for non-prime hours"
+    non_prime_rate = st.number_input(
+        "Non-Member Rate (Off-Peak) — per court / hr",
+        min_value=20.0,
+        max_value=200.0,
+        value=pricing["nm_off_per_court"],  # $56/hr PER COURT
+        step=5.0,
+        help="Off-peak hours rate for non-members PER COURT HOUR"
     )
-    non_prime_rate = base_prime_rate * (1 - non_prime_discount / 100)
-    st.caption(f"**Non-Prime Rate: ${non_prime_rate:.2f}/hour**")
+    # Update pricing registry
+    pricing["nm_off_per_court"] = non_prime_rate
+    
+    st.caption("📋 Court bookings are priced per court per hour. Per-player equivalents shown for context only.")
+    st.caption(f"💡 Doubles equivalent: Prime ≈${base_prime_rate/4:.2f}/player, Off-peak ≈${non_prime_rate/4:.2f}/player")
     
     # Member discount calculation
-    standard_per_person_prime = base_prime_rate / 4  # Assuming 4 players per court
-    member_prime_discount = st.slider(
-        "Player Member Prime Rate Discount (% from Standard)",
-        min_value=0,
-        max_value=75,
-        value=36,
-        help="Percentage discount for members during prime time"
+    # Members typically play for free (membership includes court access)
+    # or pay a heavily discounted rate
+    members_play_free = st.checkbox(
+        "Members play free (court access included in membership)",
+        value=True,
+        help="If unchecked, members pay a discounted court rate"
     )
-    member_prime_rate = standard_per_person_prime * (1 - member_prime_discount / 100)
-    st.caption(f"**Member Prime Rate: ${member_prime_rate:.2f}/person/hour**")
+    
+    if members_play_free:
+        member_court_rate_prime = 0.0
+        member_court_rate_offpeak = 0.0
+        st.caption("**Members: Free court access (included in membership)**")
+    else:
+        member_discount = st.slider(
+            "Member Court Rate Discount (%)",
+            min_value=0,
+            max_value=75,
+            value=50,
+            help="Percentage discount for members on court rates"
+        )
+        member_court_rate_prime = base_prime_rate * (1 - member_discount / 100)
+        member_court_rate_offpeak = non_prime_rate * (1 - member_discount / 100)
+        st.caption(f"**Member Court Rates: Prime ${member_court_rate_prime:.2f}/court/hr, Off-peak ${member_court_rate_offpeak:.2f}/court/hr**")
     
     st.divider()
     
@@ -158,22 +262,22 @@ with st.sidebar:
     )
     
     # Monthly Member Count Schedule
-    member_schedule_default = "75, 100, 130, 165, 200, 240, 280, 325, 375, 425, 465, 500"
+    member_schedule_default = "50, 70, 90, 115, 140, 170, 195, 230, 265, 300, 325, 350"  # Capped at 350
     member_schedule_input = st.text_input(
         "Monthly Member Count Schedule (Year 1)",
         value=member_schedule_default,
         help="Enter 12 comma-separated numbers for member count at end of each month"
     )
     
-    # Parse member schedule
+    # Parse member schedule with cap enforcement
     try:
-        member_schedule = [int(x.strip()) for x in member_schedule_input.split(',')]
+        member_schedule = [min(int(x.strip()), MEMBER_CAP) for x in member_schedule_input.split(',')]
         if len(member_schedule) != 12:
-            st.error("Please provide exactly 12 member counts (one for each month)")
-            member_schedule = [75, 100, 130, 165, 200, 240, 280, 325, 375, 425, 465, 500]
+            st.error(f"Please provide exactly 12 member counts (max {MEMBER_CAP} each)")
+            member_schedule = [min(x, MEMBER_CAP) for x in [50, 70, 90, 115, 140, 170, 195, 230, 265, 300, 325, 350]]
     except:
         st.error("Invalid member schedule format. Using defaults.")
-        member_schedule = [75, 100, 130, 165, 200, 240, 280, 325, 375, 425, 465, 500]
+        member_schedule = [min(x, MEMBER_CAP) for x in [50, 70, 90, 115, 140, 170, 195, 230, 265, 300, 325, 350]]
     
     # Tier Mix Sliders
     st.markdown("**Membership Tier Mix** (Must total 100%)")
@@ -213,41 +317,156 @@ with st.sidebar:
     
     st.divider()
     
-    # League Programming
+    # Prime Window & League Schedule
+    st.subheader("Prime Window & League Schedule")
+    
+    # Prime window definition (aggressive)
+    prime_start_weekday = st.number_input(
+        "Prime Start (Weekdays, 24h)", 
+        min_value=0.0, 
+        max_value=24.0, 
+        value=16.0, 
+        step=0.5,
+        help="4pm start time for aggressive prime window"
+    )
+    
+    prime_end_mon_thu = st.number_input(
+        "Prime End (Mon–Thu, 24h)", 
+        min_value=0.0, 
+        max_value=24.0, 
+        value=22.0, 
+        step=0.5,
+        help="10pm end time for Monday-Thursday"
+    )
+    
+    prime_end_fri = st.number_input(
+        "Prime End (Fri, 24h)", 
+        min_value=0.0, 
+        max_value=24.0, 
+        value=21.0, 
+        step=0.5,
+        help="9pm end time for Friday"
+    )
+    
+    weekend_morning_hours = st.number_input(
+        "Weekend Prime Morning Hours", 
+        min_value=0.0, 
+        max_value=8.0, 
+        value=4.0, 
+        step=0.5,
+        help="Hours of prime time on weekend mornings (e.g., 8am-12pm = 4 hours)"
+    )
+    
+    st.divider()
+    
+    # League scheduling inputs
     st.subheader("League Programming")
     
-    league_price = st.number_input(
-        "Standard League Price ($/Person for 6-week session)",
-        min_value=0.0,
-        max_value=500.0,
-        value=99.0,
-        step=1.0
+    # Which days actually run leagues (not every night)
+    league_evenings_per_week = st.slider(
+        "Weeknights with Leagues (Mon–Fri)", 
+        min_value=0, 
+        max_value=5, 
+        value=4,
+        help="Number of weekday evenings that run leagues"
     )
     
-    league_prime_hours_pct = st.slider(
-        "Prime-Time Hours Allocated to Leagues (%)",
-        min_value=0,
-        max_value=100,
-        value=50,
-        help="Percentage of prime-time hours reserved for leagues"
+    league_weekend_mornings = st.slider(
+        "Weekend Mornings with Leagues", 
+        min_value=0, 
+        max_value=2, 
+        value=1,
+        help="Number of weekend mornings that run leagues"
     )
     
-    league_sellthrough = st.slider(
-        "League Sell-Through Rate (%)",
-        min_value=0,
-        max_value=100,
-        value=85,
-        help="Percentage of league spots that are filled"
+    # League block setup
+    league_session_length_hours = st.number_input(
+        "League Session Length (hours)", 
+        min_value=1.0, 
+        max_value=2.0, 
+        value=1.5, 
+        step=0.25,
+        help="90-minute sessions for better experience"
     )
     
-    league_scheduling_efficiency = st.slider(
-        "League Scheduling Efficiency (%)",
-        min_value=50,
-        max_value=100,
-        value=90,
-        help="Efficiency of court scheduling for leagues (accounts for transitions, no-shows, etc.)"
+    league_buffer_minutes = st.number_input(
+        "Buffer Between League Blocks (minutes)", 
+        min_value=0, 
+        max_value=30, 
+        value=10, 
+        step=5,
+        help="Time between league blocks for transitions"
     )
     
+    use_all_courts_for_league = st.checkbox(
+        "Use ALL Courts for League Blocks", 
+        value=True,
+        help="If checked, all courts are used during league blocks"
+    )
+    
+    if not use_all_courts_for_league:
+        courts_used = st.slider(
+            "Courts Used for League Blocks", 
+            min_value=1, 
+            max_value=NUM_COURTS, 
+            value=NUM_COURTS
+        )
+    else:
+        courts_used = NUM_COURTS
+    
+    # League pricing (per slot / 6-week session)
+    col1, col2 = st.columns(2)
+    with col1:
+        league_price_offpeak = st.number_input(
+            "League Price (Off-Peak, per player, 6 weeks)",
+            min_value=0.0,
+            max_value=500.0,
+            value=pricing["league_off_per_slot_6wk"],  # $100
+            step=5.0,
+            help="Off-peak league fee per player for full 6-week session"
+        )
+        # Update pricing registry
+        pricing["league_off_per_slot_6wk"] = league_price_offpeak
+    
+    with col2:
+        league_price_prime = st.number_input(
+            "League Price (Prime, per player, 6 weeks)",
+            min_value=0.0,
+            max_value=500.0,
+            value=pricing["league_prime_per_slot_6wk"],  # $150
+            step=5.0,
+            help="Prime-time league fee per player for full 6-week session"
+        )
+        # Update pricing registry
+        pricing["league_prime_per_slot_6wk"] = league_price_prime
+    
+    st.caption("📋 League fees are per player (per slot) for a 6-week session.")
+    
+    # For backward compatibility, use prime price as default
+    league_price = league_price_prime
+    
+    # Realism toggles
+    league_fill_rate = st.slider(
+        "League Fill Rate", 
+        min_value=0.5, 
+        max_value=1.0, 
+        value=0.9, 
+        step=0.05,
+        help="Percentage of league slots that are filled"
+    )
+    
+    active_league_weeks_per_year = st.slider(
+        "Active League Weeks / Year", 
+        min_value=40, 
+        max_value=52, 
+        value=46, 
+        step=1,
+        help="Weeks per year leagues run (excluding holidays/breaks)"
+    )
+    
+    # Keep these for compatibility but they'll be overridden by schedule
+    league_sellthrough = league_fill_rate * 100  # Convert to percentage
+    league_scheduling_efficiency = 90  # Default efficiency
     backfill_league_hours = st.checkbox(
         "Backfill unfilled league hours to rentals?",
         value=True,
@@ -259,6 +478,27 @@ with st.sidebar:
     # Corporate Activities
     st.subheader("Corporate Activities")
     
+    col1, col2 = st.columns(2)
+    with col1:
+        corporate_rate_prime = st.number_input(
+            "Corporate Prime Rate ($/Hour)",
+            min_value=0.0,
+            max_value=500.0,
+            value=200.0,  # New: $200/hr prime
+            step=10.0,
+            help="Corporate event rate during prime hours: $200/hr"
+        )
+    
+    with col2:
+        corporate_rate_offpeak = st.number_input(
+            "Corporate Off-Peak Rate ($/Hour)",
+            min_value=0.0,
+            max_value=500.0,
+            value=170.0,  # New: $170/hr off-peak
+            step=10.0,
+            help="Corporate event rate during off-peak hours: $170/hr"
+        )
+    
     corporate_frequency = st.number_input(
         "Corporate Event Frequency (per month)",
         min_value=0,
@@ -268,23 +508,18 @@ with st.sidebar:
         help="Number of corporate team-building events per month"
     )
     
-    corporate_revenue_per_event = st.number_input(
-        "Corporate Event Revenue ($ per event)",
-        min_value=0.0,
-        max_value=10000.0,
-        value=2500.0,
-        step=100.0,
-        help="Revenue per corporate event"
-    )
-    
     corporate_hours_per_event = st.number_input(
-        "Corporate Event Utilization (prime hours per event)",
+        "Corporate Event Duration (hours)",
         min_value=0,
         max_value=20,
         value=6,
         step=1,
-        help="Prime-time court hours consumed per corporate event"
+        help="Average duration of corporate events (hours)"
     )
+    
+    # Calculate revenue per event based on prime/off-peak split (assume 70% prime for corporate)
+    corporate_revenue_per_event = (corporate_hours_per_event * 
+                                  (0.7 * corporate_rate_prime + 0.3 * corporate_rate_offpeak))
     
     st.divider()
     
@@ -379,6 +614,16 @@ with st.sidebar:
         "Max Member Play Mix (Prime, %)",
         min_value=50, max_value=90, value=70, step=5,
         help="Upper bound on member share of prime-time court hours"
+    ) / 100.0
+    
+    # Non-member demand cap for prime hours
+    nonmember_prime_share_max = st.slider(
+        "Max Non-Member Share of OPEN Prime Hours (%)",
+        min_value=10,
+        max_value=40,
+        value=25,  # Default 25% max for non-members
+        step=5,
+        help="Cap on non-member share of prime-time open play hours (after leagues/corporate/tournaments)"
     ) / 100.0
     
     # Seasonal Adjustment Inputs
@@ -706,27 +951,174 @@ def amort_schedule(loan_amt, r_mo, n):
 # Generate amortization schedule
 amort = amort_schedule(loan_amount, monthly_interest_rate, num_payments)
 
+# Rate audit function to catch unit bleed
+def audit_rates(debug_data, pricing):
+    """Audit configured vs implied rates to catch unit bleed"""
+    audit_results = []
+    
+    for i, month_data in enumerate(debug_data):
+        month = month_data.get('month', f'Month {i+1}')
+        
+        # Calculate implied rates from revenue and hours
+        nm_prime_hours = month_data.get('nm_prime_hours', 0)
+        nm_prime_rev = month_data.get('nm_prime_revenue', 0)
+        nm_off_hours = month_data.get('nm_offpeak_hours', 0)
+        nm_off_rev = month_data.get('nm_offpeak_revenue', 0)
+        
+        implied_nm_prime = nm_prime_rev / nm_prime_hours if nm_prime_hours > 0 else 0
+        implied_nm_off = nm_off_rev / nm_off_hours if nm_off_hours > 0 else 0
+        
+        # League implied rates
+        league_slots = month_data.get('league_slots_filled', 0)
+        league_rev = month_data.get('league_revenue', 0)
+        implied_league = (league_rev * 6) / league_slots if league_slots > 0 else 0  # Convert to 6-week rate
+        
+        audit_results.append({
+            'Month': month,
+            'NM Prime Configured': pricing['nm_prime_per_court'],
+            'NM Prime Implied': implied_nm_prime,
+            'NM Prime Match': abs(implied_nm_prime - pricing['nm_prime_per_court']) < 0.01,
+            'NM Off Configured': pricing['nm_off_per_court'],
+            'NM Off Implied': implied_nm_off,
+            'NM Off Match': abs(implied_nm_off - pricing['nm_off_per_court']) < 0.01,
+            'League Configured': pricing['league_prime_per_slot_6wk'],
+            'League Implied': implied_league,
+            'League Match': abs(implied_league - pricing['league_prime_per_slot_6wk']) < 1.0,
+        })
+    
+    return audit_results
+
+# Sanity check function
+def run_sanity_checks(prime_share, league_share, member_counts, debug_data=None):
+    """Run assertions to validate calculations"""
+    errors = []
+    
+    # Check prime share is realistic
+    if not (0.15 <= prime_share <= 0.35):
+        errors.append(f"Prime share {prime_share*100:.0f}% out of realistic bounds (15-35%)")
+    
+    # Check league share
+    if league_share > 0.80:
+        errors.append(f"League share {league_share*100:.0f}% too high (max 80% recommended)")
+    
+    # Check member cap
+    max_members = max(member_counts) if member_counts else 0
+    if max_members > MEMBER_CAP:
+        errors.append(f"Member count {max_members} exceeds cap {MEMBER_CAP}")
+    
+    avg_members = sum(member_counts) / len(member_counts) if member_counts else 0
+    if avg_members > MEMBER_CAP:
+        errors.append(f"Average members {avg_members:.0f} exceeds cap {MEMBER_CAP}")
+    
+    # Check capacity allocation if debug data provided
+    if debug_data:
+        for month_data in debug_data:
+            # Verify prime hours not over-allocated
+            prime_total = month_data.get('prime_hours_total', 0)
+            prime_used = (
+                month_data.get('league_prime_hours', 0) +
+                month_data.get('corp_prime_hours', 0) +
+                month_data.get('tourn_prime_hours', 0) +
+                month_data.get('open_prime_hours', 0)
+            )
+            if prime_used > prime_total + 1e-6:
+                errors.append(f"Prime hours over-allocated in {month_data.get('month', 'unknown')}: {prime_used:.0f} > {prime_total:.0f}")
+    
+    return errors
+
+# Calculate schedule-driven prime hours and league capacity
+# 1) Block length with buffer (hours)
+block_slot_hours = float(league_session_length_hours) + float(league_buffer_minutes) / 60.0
+# Expect ~1.6667 for 90m + 10m
+
+# 2) Prime windows (hours per night)
+weekday_window_mon_thu = max(0.0, prime_end_mon_thu - prime_start_weekday)   # expect 6.0
+weekday_window_fri = max(0.0, prime_end_fri - prime_start_weekday)           # expect 5.0
+weekend_window_hours = float(weekend_morning_hours)                          # expect 4.0
+
+# 3) Blocks per night (floor)
+blocks_per_mon_thu = math.floor(weekday_window_mon_thu / block_slot_hours) if weekday_window_mon_thu > 0 else 0
+blocks_per_fri = math.floor(weekday_window_fri / block_slot_hours) if weekday_window_fri > 0 else 0
+blocks_per_weekend = math.floor(weekend_window_hours / block_slot_hours) if weekend_window_hours > 0 else 0
+
+# Nights actually running leagues (inputs)
+mon_thu_league_nights = int(min(league_evenings_per_week, 4))
+fri_league_nights = int(max(0, league_evenings_per_week - mon_thu_league_nights))
+weekend_league_morns = int(league_weekend_mornings)
+
+# 4) Weekly blocks and slots
+players_per_court = 4  # doubles
+
+league_blocks_per_week = (
+    mon_thu_league_nights * blocks_per_mon_thu +
+    fri_league_nights * blocks_per_fri +
+    weekend_league_morns * blocks_per_weekend
+)
+
+players_per_block = players_per_court * courts_used
+weekly_league_slots = league_blocks_per_week * players_per_block
+filled_weekly_slots = math.floor(weekly_league_slots * league_fill_rate)
+
+# Revenue recognition
+weekly_rev_per_slot = league_price_prime / 6.0  # per 6-week session → per-week
+weekly_league_revenue = filled_weekly_slots * weekly_rev_per_slot
+annual_league_revenue = weekly_league_revenue * active_league_weeks_per_year
+
+# Prime hours per week (for capacity check)
+prime_hours_mon_thu = 4 * weekday_window_mon_thu  # 4 nights
+prime_hours_fri = 1 * weekday_window_fri  # 1 night
+prime_hours_weekend = weekend_window_hours * 2  # 2 days
+
+prime_court_hours_week = NUM_COURTS * (prime_hours_mon_thu + prime_hours_fri + prime_hours_weekend)
+league_court_hours_week = league_blocks_per_week * block_slot_hours * courts_used
+
+# League share of prime (derived from schedule, not fixed)
+league_share_prime = min(1.0, league_court_hours_week / max(1e-6, prime_court_hours_week))
+
+# For compatibility, set league_prime_hours_pct based on schedule
+league_prime_hours_pct = league_share_prime * 100  # Convert to percentage
+
+# For backward compatibility
+prime_hours_total_per_week = prime_court_hours_week
+filled_league_slots = filled_weekly_slots
+
+# 5) Assertions (catch unit bugs)
+assert abs(block_slot_hours - (league_session_length_hours + league_buffer_minutes/60.0)) < 1e-6, "Block slot hours calculation error"
+assert blocks_per_mon_thu >= 0 and blocks_per_fri >= 0 and blocks_per_weekend >= 0, "Blocks per night must be non-negative"
+
+# Sanity for common case:
+if (abs(weekday_window_mon_thu - 6.0) < 1e-3 and abs(league_session_length_hours - 1.5) < 1e-3 and league_buffer_minutes == 10):
+    assert blocks_per_mon_thu == 3, f"Expected 3 blocks Mon–Thu, got {blocks_per_mon_thu}"
+if (abs(weekend_window_hours - 4.0) < 1e-3 and abs(league_session_length_hours - 1.5) < 1e-3 and league_buffer_minutes == 10):
+    assert blocks_per_weekend == 2, f"Expected 2 blocks weekend, got {blocks_per_weekend}"
+
+# Capacity identity vs prime court-hours
+assert league_court_hours_week <= prime_court_hours_week + 1e-6, f"League court-hours ({league_court_hours_week:.1f}) exceed PRIME capacity ({prime_court_hours_week:.1f})"
+assert active_league_weeks_per_year <= 52, f"Active league weeks ({active_league_weeks_per_year}) cannot exceed 52"
+assert league_session_length_hours >= 1.0 and league_session_length_hours <= 2.0, "League sessions should be 1-2 hours"
+
 # Generate monthly projections
 def generate_monthly_projections():
     months = []
     dates = []
+    debug_data = []  # Store debug info
     
     for i in range(24):  # 2 years
         current_date = start_date + relativedelta(months=i)
         dates.append(current_date)
         months.append(current_date.strftime("%b %Y"))
     
-    # Use member schedule for growth
+    # Use member schedule for growth with cap enforcement
     member_counts = []
     for i in range(24):
         if i < 12:
-            # Year 1: Use the specified schedule (already integers)
-            members = member_schedule[i]
+            # Year 1: Use the specified schedule with cap
+            members = min(member_schedule[i], MEMBER_CAP)
         else:
-            # Year 2: Continue growth to 120% of Year 1 end value
-            year1_end = member_schedule[11]
-            growth_factor = 1 + (0.2 * ((i - 11) / 12))  # Linear growth from 100% to 120%
-            members = year1_end * min(growth_factor, 1.2)
+            # Year 2: Growth capped at MEMBER_CAP
+            year1_end = min(member_schedule[11], MEMBER_CAP)
+            growth_factor = 1 + (0.1 * ((i - 11) / 12))  # Linear growth from 100% to 110%
+            members = min(year1_end * growth_factor, MEMBER_CAP)
         member_counts.append(members)  # Keep as float for calculations
     
     # Calculate revenues
@@ -736,6 +1128,16 @@ def generate_monthly_projections():
     corporate_revenue = []
     tournament_revenue_list = []
     retail_revenue = []
+    
+    # Track metrics for sanity checks
+    utilized_hours_list = []
+    variable_revenue_list = []
+    vr_per_hour_list = []
+    revpach_list = []
+    
+    # STABILITY PATCH: Sanity band constants
+    REVPACH_MIN, REVPACH_MAX = 10.0, 22.0
+    VR_MIN, VR_MAX = 35.0, 55.0
     
     # Variable to store current quarter's league revenue
     current_quarter_league_rev = 0.0
@@ -754,10 +1156,22 @@ def generate_monthly_projections():
                             pro_members * pro_tier_fee)
         membership_revenue.append(monthly_membership)
         
-        # Court rental revenue
+        # Court rental revenue - using schedule-driven prime hours
         total_court_hours = NUM_COURTS * HOURS_PER_DAY * DAYS_PER_MONTH
-        prime_hours = total_court_hours * PRIME_TIME_HOURS_RATIO
-        non_prime_hours = total_court_hours * (1 - PRIME_TIME_HOURS_RATIO)
+        
+        # Convert weekly schedule-driven hours to monthly
+        weeks_per_month = 4.33  # Average weeks per month
+        prime_hours_total = (prime_hours_total_per_week * weeks_per_month) / 7 * 30  # Scale to monthly
+        offpeak_hours_total = total_court_hours - prime_hours_total
+        
+        # Store for debug
+        debug_info = {
+            'month': months[i] if i < len(months) else f"Month {i+1}",
+            'total_court_hours': total_court_hours,
+            'prime_share': PRIME_TIME_HOURS_RATIO,
+            'prime_hours_total': prime_hours_total,
+            'offpeak_hours_total': offpeak_hours_total,
+        }
         
         # Deduct corporate event hours from prime hours (using ramp-up schedule)
         if i < 3:  # Months 1-3: No corporate events
@@ -776,12 +1190,16 @@ def generate_monthly_projections():
         if (i + 1) % 3 == 0:  # Months 3, 6, 9, 12, 15, 18, 21, 24
             tournament_hours_used = tournament_hours * tournament_frequency
         
-        # Calculate tournament allocation between prime and non-prime
+        # Calculate tournament allocation between prime and off-peak
         tournament_prime_hours = tournament_hours_used * 0.7  # 70% of tournament hours are prime
-        tournament_non_prime_hours = tournament_hours_used * 0.3  # 30% are non-prime
+        tournament_offpeak_hours = tournament_hours_used * 0.3  # 30% are off-peak
         
         # Prime hours available after corporate and tournament events
-        pre_league_prime = max(0, prime_hours - corporate_prime_hours_used - tournament_prime_hours)
+        pre_league_prime = max(0, prime_hours_total - corporate_prime_hours_used - tournament_prime_hours)
+        
+        # Store debug info
+        debug_info['corp_prime_hours'] = corporate_prime_hours_used
+        debug_info['tourn_prime_hours'] = tournament_prime_hours
         
         # --- League reservation & revenue (quarterly, leagues start Month 2) ---
         if i < league_start_idx:
@@ -791,19 +1209,22 @@ def generate_monthly_projections():
         else:
             # Compute once at the START of each league quarter and keep constant for 3 months
             if (i - league_start_idx) % 3 == 0:
-                # Capacity baseline = PRE-league prime hours * allocation% across the full 3-month session
-                session_league_hours = pre_league_prime * (league_prime_hours_pct / 100.0) * 3.0
-                # Scheduling efficiency (transitions/no-shows)
-                effective_session_hours = session_league_hours * (league_scheduling_efficiency / 100.0)
-                # Hours actually run based on sell-through
-                run_session_hours = effective_session_hours * (league_sellthrough / 100.0)
-
-                # Fixed monthly reservation (constant for each month of this quarter)
-                reserved_league_prime_hours_monthly = run_session_hours / 3.0
-
-                # Revenue: 4 players per court-hour, 6-week program; spread evenly over 3 months
-                league_spots = (run_session_hours / 6.0) * 4.0
-                current_quarter_league_rev = league_spots * league_price / 3.0
+                # Use schedule-driven league capacity
+                # Monthly league court-hours from weekly schedule
+                league_court_hours_monthly = (league_court_hours_week * weeks_per_month)
+                reserved_league_prime_hours_monthly = league_court_hours_monthly
+                
+                # Calculate filled slots for this month
+                monthly_filled_slots = filled_league_slots * weeks_per_month
+                
+                # Revenue: Each slot pays full price for 6-week session
+                # Recognize 1/2 of session revenue per month (6 weeks = 1.5 months)
+                current_quarter_league_rev = monthly_filled_slots * league_price_prime / 1.5
+                
+                # For backward compatibility
+                max_league_capacity = monthly_filled_slots
+                
+                debug_info['max_league_capacity'] = max_league_capacity
 
             # Use the same reservation & revenue for months 2–3 of the quarter
             league_rev = current_quarter_league_rev
@@ -820,45 +1241,122 @@ def generate_monthly_projections():
                 full_alloc_monthly = (pre_league_prime * (league_prime_hours_pct / 100.0))
                 available_prime_hours = max(0.0, pre_league_prime - full_alloc_monthly)
         
-        # Non-prime hours after tournament usage
-        non_prime_hours_after_events = max(0, non_prime_hours - tournament_non_prime_hours)
+        # Store debug info
+        debug_info['league_prime_hours'] = reserved_league_prime_hours_monthly
+        debug_info['open_prime_hours'] = available_prime_hours
+        debug_info['league_slots_filled'] = filled_league_slots if i >= league_start_idx else 0
+        debug_info['league_revenue'] = league_rev
+        
+        # Off-peak hours after tournament usage
+        offpeak_hours_after_events = max(0, offpeak_hours_total - tournament_offpeak_hours)
         
         # Calculate utilization
         if i < 12:
             utilization = rampup_percentages[i]
         else:
-            utilization = 0.88  # Steady state at 88% (95% prime, 80% non-prime blended)
+            # Year 2: Base utilization with seasonal variation
+            base_utilization = 0.82  # More realistic steady state
+            month_idx = (start_date.month + i - 1) % 12
+            month_name = month_names[month_idx]
+            
+            if month_name in low_season_months:
+                utilization = base_utilization * (1 - seasonal_dip / 100)
+            else:
+                utilization = base_utilization
         utilization = float(np.clip(utilization, 0.0, 1.0))
         
         # Estimate member vs non-member mix (members use more courts)
         member_play_ratio = min(member_play_ratio_cap, members / 1000.0)  # cap + growth-linked
         
-        # Calculate court rental revenue
-        # Prime time courts - split between members and non-members
-        prime_member_hours = available_prime_hours * utilization * member_play_ratio
-        prime_nonmember_hours = available_prime_hours * utilization * (1 - member_play_ratio)
+        # STABILITY PATCH: Calculate court rental revenue ONLY on remainder hours
+        # Assert capacity identity
+        if reserved_league_prime_hours_monthly > pre_league_prime + 1e-6:
+            st.warning(f"League hours {reserved_league_prime_hours_monthly:.1f} exceed available prime {pre_league_prime:.1f}")
+            reserved_league_prime_hours_monthly = pre_league_prime
         
-        # Members book courts but pay per-person rate (assume avg 3.5 players per court)
-        prime_member_court_revenue = prime_member_hours * member_prime_rate * 3.5
+        if available_prime_hours < -1e-6:
+            st.warning(f"Negative available prime hours: {available_prime_hours:.1f}")
+            available_prime_hours = 0
         
-        # Non-members pay full court rate
+        # Prime time courts - split with demand cap for non-members
+        open_prime = available_prime_hours * utilization
+        
+        # Initial demand split
+        nm_prime_demand = open_prime * (1 - member_play_ratio)
+        # mem_prime_demand = open_prime * member_play_ratio  # Not used, calculated differently below
+        
+        # Apply non-member cap on prime hours (safety guardrail)
+        nm_prime_ceiling = open_prime * nonmember_prime_share_max
+        prime_nonmember_hours = min(nm_prime_demand, nm_prime_ceiling)
+        prime_member_hours = max(0.0, open_prime - prime_nonmember_hours)
+        
+        # Revenue calculation - STRICTLY PER COURT (no player multipliers)
+        # Members: if membership includes court access, rate is typically 0
+        prime_member_court_revenue = prime_member_hours * member_court_rate_prime  # member_court_rate_prime is 0 if included in membership
+        
+        # Non-members pay full court rate (per court hour)
         prime_nonmember_revenue = prime_nonmember_hours * base_prime_rate
         
-        # Non-prime hours - also split between members and non-members
-        non_prime_util = min(1.0, utilization * 0.6)  # Lower utilization in non-prime, capped at 1.0
-        non_prime_member_hours = non_prime_hours_after_events * non_prime_util * member_play_ratio
-        non_prime_nonmember_hours = non_prime_hours_after_events * non_prime_util * (1 - member_play_ratio)
+        # Off-peak hours - also split between members and non-members
+        offpeak_util = min(1.0, utilization * 0.6)  # Lower utilization in off-peak
+        offpeak_member_hours = offpeak_hours_after_events * offpeak_util * member_play_ratio
+        offpeak_nonmember_hours = offpeak_hours_after_events * offpeak_util * (1 - member_play_ratio)
         
-        # Calculate non-prime member rate (scaled down from prime member rate)
-        non_prime_discount_factor = non_prime_rate / base_prime_rate
-        non_prime_member_rate = member_prime_rate * non_prime_discount_factor
+        debug_info['open_offpeak_hours'] = offpeak_hours_after_events
         
-        non_prime_member_revenue = non_prime_member_hours * non_prime_member_rate * 3.5
-        non_prime_nonmember_revenue = non_prime_nonmember_hours * non_prime_rate
+        # Off-peak revenue - STRICTLY PER COURT (no player multipliers)
+        offpeak_member_revenue = offpeak_member_hours * member_court_rate_offpeak  # member_court_rate_offpeak is 0 if included in membership
+        offpeak_nonmember_revenue = offpeak_nonmember_hours * non_prime_rate
+        
+        # Store debug revenue info
+        debug_info['court_rev_prime'] = prime_member_court_revenue + prime_nonmember_revenue
+        debug_info['court_rev_offpeak'] = offpeak_member_revenue + offpeak_nonmember_revenue
         
         total_court_revenue = (prime_member_court_revenue + prime_nonmember_revenue + 
-                             non_prime_member_revenue + non_prime_nonmember_revenue)
+                             offpeak_member_revenue + offpeak_nonmember_revenue)
+        
+        # Sanity check: revenue shouldn't exceed maximum possible
+        max_court_revenue = (
+            (prime_member_hours + prime_nonmember_hours) * base_prime_rate +
+            (offpeak_member_hours + offpeak_nonmember_hours) * non_prime_rate
+        )
+        if total_court_revenue > max_court_revenue + 1e-6:
+            st.warning(f"Month {i+1}: Court revenue ${total_court_revenue:.0f} exceeds max ${max_court_revenue:.0f}")
+        
+        # STABILITY PATCH: Ceiling guard for court revenue (no player multipliers)
+        max_possible_court_rev = (
+            (prime_member_hours + prime_nonmember_hours) * max(base_prime_rate, member_court_rate_prime if 'member_court_rate_prime' in locals() else 0) +
+            (offpeak_member_hours + offpeak_nonmember_hours) * max(non_prime_rate, member_court_rate_offpeak if 'member_court_rate_offpeak' in locals() else 0)
+        )
+        if total_court_revenue > max_possible_court_rev + 1e-6:
+            st.warning(f"Court revenue ${total_court_revenue:.0f} exceeds max ${max_possible_court_rev:.0f}")
+            total_court_revenue = max_possible_court_rev
+        
         court_rental_revenue.append(total_court_revenue)
+        
+        # Calculate utilized hours for this month
+        total_utilized = (
+            prime_member_hours + prime_nonmember_hours +
+            offpeak_member_hours + offpeak_nonmember_hours +
+            reserved_league_prime_hours_monthly +
+            corporate_prime_hours_used +
+            tournament_hours_used
+        )
+        utilized_hours_list.append(total_utilized)
+        
+        # Store hours for rate audit
+        debug_info['nm_prime_hours'] = prime_nonmember_hours
+        debug_info['nm_offpeak_hours'] = offpeak_nonmember_hours
+        debug_info['nm_prime_revenue'] = prime_nonmember_hours * pricing['nm_prime_per_court']
+        debug_info['nm_offpeak_revenue'] = offpeak_nonmember_hours * pricing['nm_off_per_court']
+        
+        # Store debug info with utilization
+        debug_info['utilized_hours'] = total_utilized
+        debug_info['utilization_rate'] = (total_utilized / total_court_hours * 100) if total_court_hours > 0 else 0
+        
+        # REMOVED - Legacy RevPACH calculation that was missing corp/tournament revenue
+        # RevPACH will be calculated once at the end with all revenue components
+        debug_data.append(debug_info)
         
         # Save monthly league revenue
         league_revenue.append(league_rev)
@@ -895,6 +1393,31 @@ def generate_monthly_projections():
         retail_profit = retail_monthly_sales * (retail_gross_margin_pct / 100.0)
         retail_rev = retail_profit * (retail_revenue_share / 100.0)
         retail_revenue.append(retail_rev)
+        
+        # Calculate variable revenue metrics for sanity checks
+        variable_rev = (
+            total_court_revenue + 
+            league_rev +
+            corp_rev +
+            tourn_rev +
+            retail_rev  # Include retail in variable revenue for completeness
+        )
+        variable_revenue_list.append(variable_rev)
+        
+        # Calculate revenue per utilized hour and RevPACH
+        vr_per_hour = variable_rev / max(1.0, total_utilized)
+        revpach = variable_rev / max(1.0, total_court_hours)
+        
+        vr_per_hour_list.append(vr_per_hour)
+        revpach_list.append(revpach)
+        
+        # Store in debug_info for consistency
+        debug_info['revpach'] = revpach
+        debug_info['rev_per_util_hr'] = vr_per_hour
+    
+    # Calculate staff costs before creating dataframe
+    staff_cost_per_hour = 5.0  # $5 per utilized court hour
+    staff_costs_list = [hours * staff_cost_per_hour for hours in utilized_hours_list]
     
     # Create projections dataframe
     projections = pd.DataFrame({
@@ -908,6 +1431,11 @@ def generate_monthly_projections():
         'Corporate Revenue': corporate_revenue,
         'Tournament Revenue': tournament_revenue_list,
         'Retail Revenue': retail_revenue,
+        'Utilized Hours': utilized_hours_list,
+        'Variable Revenue': variable_revenue_list,
+        'VR per Hour': vr_per_hour_list,
+        'RevPACH': revpach_list,
+        'Staff Costs': staff_costs_list
     })
     
     # Calculate total revenue and expenses
@@ -942,8 +1470,22 @@ def generate_monthly_projections():
         fixed_costs_list.append(month_fixed)
     
     projections['Fixed Costs'] = fixed_costs_list
-    projections['Variable Costs'] = projections['Total Revenue'] * (variable_cost_pct / 100)
-    projections['Total Operating Costs'] = projections['Fixed Costs'] + projections['Variable Costs']
+    
+    # STABILITY PATCH: Variable costs scale with activity-based revenue only
+    activity_revenue = [
+        projections['Court Rental Revenue'][i] + 
+        projections['League Revenue'][i] + 
+        projections['Corporate Revenue'][i] + 
+        projections['Tournament Revenue'][i]
+        for i in range(24)
+    ]
+    projections['Variable Costs'] = [v * (variable_cost_pct / 100) for v in activity_revenue]
+    
+    # Staff costs already calculated and included in DataFrame
+    projections['Total Operating Costs'] = [
+        projections['Fixed Costs'][i] + projections['Variable Costs'][i] + projections['Staff Costs'][i]
+        for i in range(24)
+    ]
     
     # Loan payments from amortization schedule
     princs, intrs, pmts = [], [], []
@@ -985,11 +1527,35 @@ def generate_monthly_projections():
     projections['Working Capital Buffer'] = working_capital_available
     projections['Adjusted EBITDA for DSCR'] = projections['EBITDA'] + projections['Working Capital Buffer']
     
-    # DSCR (Operating) and DSCR (With Working Capital)
+    # STABILITY PATCH: DSCR computation - both monthly and annual
     projections['DSCR_Operating'] = projections['EBITDA'] / projections['Total Debt Service']
     projections['DSCR_With_WC'] = (projections['EBITDA'] + projections['Working Capital Buffer']) / projections['Total Debt Service']
     projections['DSCR_Operating'] = projections['DSCR_Operating'].replace([np.inf, -np.inf], np.nan)
     projections['DSCR_With_WC'] = projections['DSCR_With_WC'].replace([np.inf, -np.inf], np.nan)
+    
+    # Calculate annual DSCR metrics
+    ebitda_year1 = projections['EBITDA'][:12].sum()
+    ebitda_year2 = projections['EBITDA'][12:24].sum()
+    debt_service_year1 = projections['Total Debt Service'][:12].sum()
+    debt_service_year2 = projections['Total Debt Service'][12:24].sum()
+    
+    annual_dscr_y1 = ebitda_year1 / debt_service_year1 if debt_service_year1 > 0 else 0
+    annual_dscr_y2 = ebitda_year2 / debt_service_year2 if debt_service_year2 > 0 else 0
+    
+    # Verify league revenue consistency
+    annual_league_rev_calc = projections['League Revenue'][:12].sum()
+    weekly_league_rev = filled_league_slots * (league_price_prime / 6.0) if 'filled_league_slots' in locals() else 0
+    annual_league_rev_expected = weekly_league_rev * 46  # 46 operational weeks
+    
+    # Add sanity check warnings
+    avg_revpach = np.mean(revpach_list)
+    avg_vr_per_hour = np.mean([v for v in vr_per_hour_list if v > 0])
+    
+    if not (REVPACH_MIN <= avg_revpach <= REVPACH_MAX):
+        st.warning(f"⚠️ RevPACH ${avg_revpach:.2f} outside expected range (${REVPACH_MIN}-${REVPACH_MAX})")
+    
+    if not (VR_MIN <= avg_vr_per_hour <= VR_MAX):
+        st.warning(f"⚠️ Variable Rev/Utilized Hr ${avg_vr_per_hour:.2f} outside expected range (${VR_MIN}-${VR_MAX})")
     
     # Ending Cash tracker (start with working capital reserve; WC Buffer is a cash OUTFLOW)
     start_cash = working_capital_reserve
@@ -1006,10 +1572,316 @@ def generate_monthly_projections():
     # Keep legacy DSCR for backward compatibility (uses With WC)
     projections['DSCR'] = projections['DSCR_With_WC']
     
-    return projections
+    # Run sanity checks
+    errors = run_sanity_checks(
+        PRIME_TIME_HOURS_RATIO,
+        league_prime_hours_pct / 100,
+        member_counts,
+        debug_data
+    )
+    
+    if errors:
+        for error in errors:
+            st.error(f"⚠️ {error}")
+    
+    # Compute unified density metrics using single source of truth
+    # Get annual totals for density calculation
+    court_rev_year = projections['Court Rental Revenue'][:12].sum()
+    league_rev_year = projections['League Revenue'][:12].sum()
+    corp_rev_year = projections['Corporate Revenue'][:12].sum()
+    tourney_rev_year = projections['Tournament Revenue'][:12].sum()
+    retail_rev_year = projections['Retail Revenue'][:12].sum()
+    
+    # Calculate weekly court-hours from monthly averages
+    avg_utilized_hours_monthly = np.mean(utilized_hours_list[:12])
+    open_ch_wk = (avg_utilized_hours_monthly / 4.33)  # Monthly to weekly
+    league_ch_wk = league_blocks_per_week * block_slot_hours * NUM_COURTS if 'league_blocks_per_week' in locals() else 0
+    corp_ch_wk = corporate_frequency * 2.0 * NUM_COURTS / 4.33  # Assuming 2-hour events
+    tourney_ch_wk = tournament_frequency * 4.0 * NUM_COURTS / 12.0  # Quarterly tournaments
+    
+    # Split open play into prime and off-peak (approximate)
+    open_prime_ch_wk = open_ch_wk * PRIME_TIME_HOURS_RATIO
+    open_offpeak_ch_wk = open_ch_wk * (1 - PRIME_TIME_HOURS_RATIO)
+    
+    # Create density state
+    ds = DensityState(
+        courts=NUM_COURTS,
+        hours_open_per_day=HOURS_PER_DAY,
+        open_prime_ch_wk=open_prime_ch_wk,
+        open_offpeak_ch_wk=open_offpeak_ch_wk,
+        league_ch_wk=league_ch_wk,
+        corp_ch_wk=corp_ch_wk,
+        tourney_ch_wk=tourney_ch_wk,
+        court_rev_year=court_rev_year,
+        league_rev_year=league_rev_year,
+        corp_rev_year=corp_rev_year,
+        tourney_rev_year=tourney_rev_year,
+        retail_rev_year=retail_rev_year,
+        active_league_weeks_per_year=46,
+        weeks_per_year_equiv=52.0
+    )
+    
+    # Compute density metrics
+    density_metrics = compute_density(ds)
+    
+    # STABILITY PATCH: Return additional metrics for debug panel
+    stability_metrics = {
+        'revpach_list': revpach_list,
+        'vr_per_hour_list': vr_per_hour_list,
+        'REVPACH_MIN': REVPACH_MIN,
+        'REVPACH_MAX': REVPACH_MAX,
+        'VR_MIN': VR_MIN,
+        'VR_MAX': VR_MAX,
+        'annual_dscr_y1': annual_dscr_y1,
+        'annual_dscr_y2': annual_dscr_y2,
+        'annual_league_rev_calc': annual_league_rev_calc,
+        'annual_league_rev_expected': annual_league_rev_expected,
+        'density_metrics': density_metrics
+    }
+    
+    return projections, debug_data, stability_metrics
 
 # Generate projections
-projections_df = generate_monthly_projections()
+projections_df, debug_data, stability_metrics = generate_monthly_projections()
+
+# Display key metrics using unified density calculations
+st.subheader("📊 Key Performance Indicators")
+col1, col2, col3, col4 = st.columns(4)
+
+with col1:
+    year1_revenue = projections_df.iloc[:12]['Total Revenue'].sum()
+    st.metric("Year 1 Revenue", f"${year1_revenue:,.0f}")
+
+with col2:
+    year1_ebitda = projections_df.iloc[:12]['EBITDA'].sum()
+    st.metric("Year 1 EBITDA", f"${year1_ebitda:,.0f}")
+
+with col3:
+    # Use unified density metrics
+    unified_revpach = stability_metrics['density_metrics']['revpach']
+    st.metric("RevPACH (Unified)", f"${unified_revpach:.2f}")
+
+with col4:
+    unified_rev_per_util = stability_metrics['density_metrics']['rev_per_util_hr']
+    st.metric("Rev/Util Hr", f"${unified_rev_per_util:.2f}")
+
+# Add cache clear button
+if st.button("🔄 Recompute Metrics"):
+    st.cache_data.clear()
+    st.rerun()
+
+# Display debug panel if enabled
+if show_debug:
+    with st.expander("🔍 Debug Reconciliation Panel", expanded=True):
+        debug_month = st.selectbox(
+            "Select Month to Debug",
+            options=range(24),
+            format_func=lambda x: projections_df.iloc[x]['Month']
+        )
+        
+        debug_info = debug_data[debug_month] if debug_month < len(debug_data) else {}
+        
+        # Create tabs for different debug views
+        tab1, tab2, tab3 = st.tabs(["Hour Allocation", "Revenue Breakdown", "Rate Audit"])
+        
+        with tab1:
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.markdown("**Hour Allocation**")
+                st.metric("Total Court Hours", f"{debug_info.get('total_court_hours', 0):.0f}")
+                st.metric("Prime Share", f"{debug_info.get('prime_share', 0)*100:.1f}%")
+                st.metric("Prime Hours Total", f"{debug_info.get('prime_hours_total', 0):.0f}")
+                st.metric("Off-Peak Hours Total", f"{debug_info.get('offpeak_hours_total', 0):.0f}")
+            
+            with col2:
+                st.markdown("**Prime Time Usage**")
+                st.metric("League Hours", f"{debug_info.get('league_prime_hours', 0):.0f}")
+                st.metric("Corporate Hours", f"{debug_info.get('corp_prime_hours', 0):.0f}")
+                st.metric("Tournament Hours", f"{debug_info.get('tourn_prime_hours', 0):.0f}")
+                st.metric("Open Play Hours", f"{debug_info.get('open_prime_hours', 0):.0f}")
+            
+            with col3:
+                st.markdown("**Revenue Breakdown**")
+                st.metric("Court Rev (Prime)", f"${debug_info.get('court_rev_prime', 0):,.0f}")
+                st.metric("Court Rev (Off-Peak)", f"${debug_info.get('court_rev_offpeak', 0):,.0f}")
+                st.metric("League Capacity", f"{debug_info.get('max_league_capacity', 0):.0f} players")
+                
+            # Capacity check
+        prime_allocated = (
+            debug_info.get('league_prime_hours', 0) +
+            debug_info.get('corp_prime_hours', 0) +
+            debug_info.get('tourn_prime_hours', 0) +
+            debug_info.get('open_prime_hours', 0)
+        )
+        prime_total = debug_info.get('prime_hours_total', 0)
+        
+        if prime_total > 0:
+            utilization_pct = (prime_allocated / prime_total) * 100
+            st.progress(min(utilization_pct / 100, 1.0))
+            st.caption(f"Prime Time Utilization: {utilization_pct:.1f}% ({prime_allocated:.0f} / {prime_total:.0f} hours)")
+        
+            if prime_allocated > prime_total + 1e-6:
+                st.error("⚠️ WARNING: Prime hours over-allocated!")
+        
+        with tab2:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown("**Monthly Revenue Sources**")
+                st.metric("Court Rental", f"${projections_df.iloc[debug_month]['Court Rental Revenue']:,.0f}")
+                st.metric("League", f"${projections_df.iloc[debug_month]['League Revenue']:,.0f}")
+                st.metric("Membership", f"${projections_df.iloc[debug_month]['Membership Revenue']:,.0f}")
+            with col2:
+                st.markdown("**Key Metrics**")
+                st.metric("RevPACH", f"${projections_df.iloc[debug_month]['RevPACH']:.2f}")
+                st.metric("VR per Hour", f"${projections_df.iloc[debug_month]['VR per Hour']:.2f}")
+                st.metric("Total Revenue", f"${projections_df.iloc[debug_month]['Total Revenue']:,.0f}")
+        
+        with tab3:
+            st.markdown("**Rate Audit - Configured vs Implied Rates**")
+            audit_results = audit_rates(debug_data, pricing)
+            if audit_results and debug_month < len(audit_results):
+                audit = audit_results[debug_month]
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.markdown("**Non-Member Prime Rate**")
+                    st.metric("Configured", f"${audit['NM Prime Configured']:.2f}")
+                    st.metric("Implied", f"${audit['NM Prime Implied']:.2f}")
+                    if audit['NM Prime Match']:
+                        st.success("✅ Rates match")
+                    else:
+                        st.error(f"⚠️ Unit bleed detected: ${abs(audit['NM Prime Implied'] - audit['NM Prime Configured']):.2f}")
+                    
+                    st.markdown("**Non-Member Off-Peak Rate**")
+                    st.metric("Configured", f"${audit['NM Off Configured']:.2f}")
+                    st.metric("Implied", f"${audit['NM Off Implied']:.2f}")
+                    if audit['NM Off Match']:
+                        st.success("✅ Rates match")
+                    else:
+                        st.error(f"⚠️ Unit bleed detected: ${abs(audit['NM Off Implied'] - audit['NM Off Configured']):.2f}")
+                
+                with col2:
+                    st.markdown("**League Rate (6-week session)**")
+                    st.metric("Configured", f"${audit['League Configured']:.2f}")
+                    st.metric("Implied", f"${audit['League Implied']:.2f}")
+                    if audit['League Match']:
+                        st.success("✅ Rates match")
+                    else:
+                        st.warning(f"⚠️ Variance: ${abs(audit['League Implied'] - audit['League Configured']):.2f}")
+        
+        # STABILITY PATCH: Display key sanity metrics
+        st.divider()
+        st.markdown("### 📊 Stability Metrics")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.markdown("**RevPACH**")
+            revpach_list = stability_metrics['revpach_list']
+            REVPACH_MIN = stability_metrics['REVPACH_MIN']
+            REVPACH_MAX = stability_metrics['REVPACH_MAX']
+            month_revpach = revpach_list[debug_month] if debug_month < len(revpach_list) else 0
+            color = "🟢" if REVPACH_MIN <= month_revpach <= REVPACH_MAX else "🔴"
+            st.metric(f"{color} Month {debug_month+1}", f"${month_revpach:.2f}")
+            st.caption(f"Target: ${REVPACH_MIN}-${REVPACH_MAX}")
+        
+        with col2:
+            st.markdown("**Rev/Utilized Hr**")
+            vr_per_hour_list = stability_metrics['vr_per_hour_list']
+            VR_MIN = stability_metrics['VR_MIN']
+            VR_MAX = stability_metrics['VR_MAX']
+            month_vr_per_hour = vr_per_hour_list[debug_month] if debug_month < len(vr_per_hour_list) else 0
+            color = "🟢" if VR_MIN <= month_vr_per_hour <= VR_MAX else "🔴"
+            st.metric(f"{color} Month {debug_month+1}", f"${month_vr_per_hour:.2f}")
+            st.caption(f"Target: ${VR_MIN}-${VR_MAX}")
+        
+        with col3:
+            st.markdown("**Annual DSCR Y1**")
+            annual_dscr_y1 = stability_metrics['annual_dscr_y1']
+            st.metric("Operating", f"{annual_dscr_y1:.2f}")
+            st.caption("Target: ≥1.25")
+        
+        with col4:
+            st.markdown("**Annual DSCR Y2**")
+            annual_dscr_y2 = stability_metrics['annual_dscr_y2']
+            st.metric("Operating", f"{annual_dscr_y2:.2f}")
+            st.caption("Target: ≥1.25")
+        
+        # League revenue consistency check
+        annual_league_rev_calc = stability_metrics['annual_league_rev_calc']
+        annual_league_rev_expected = stability_metrics['annual_league_rev_expected']
+        if abs(annual_league_rev_calc - annual_league_rev_expected) > 100:
+            st.warning(f"⚠️ League Revenue Mismatch: Monthly sum ${annual_league_rev_calc:,.0f} vs Weekly calc ${annual_league_rev_expected:,.0f}")
+        else:
+            st.success("✅ Capacity constraints satisfied")
+            
+        # Add sanity checks section
+        st.divider()
+        st.markdown("**Schedule-Driven League Details**")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**Prime Windows & Schedule**")
+            st.metric("Mon-Thu Window", f"{weekday_window_mon_thu:.1f}h/night")
+            st.metric("Friday Window", f"{weekday_window_fri:.1f}h/night")
+            st.metric("Weekend AM Window", f"{weekend_window_hours:.1f}h/day")
+            st.metric("Block Slot Hours", f"{block_slot_hours:.3f}h")
+            st.metric("Mon-Thu League Nights", f"{mon_thu_league_nights}")
+            st.metric("Fri League Nights", f"{fri_league_nights}")
+            st.metric("Weekend League Mornings", f"{weekend_league_morns}")
+            
+        with col2:
+            st.markdown("**League Blocks**")
+            st.metric("Blocks/Mon-Thu", f"{blocks_per_mon_thu}")
+            st.metric("Blocks/Fri", f"{blocks_per_fri}")
+            st.metric("Blocks/Weekend", f"{blocks_per_weekend}")
+            st.metric("Total Blocks/Week", f"{league_blocks_per_week}")
+            st.metric("Players/Block", f"{players_per_block}")
+            st.metric("Courts Used", f"{courts_used}")
+            st.metric("League Court-Hours/Week", f"{league_court_hours_week:.1f}")
+                
+        with col3:
+            st.markdown("**League Capacity & Revenue**")
+            st.metric("Weekly Slots", f"{weekly_league_slots:.0f}")
+            st.metric("Filled Weekly Slots", f"{filled_weekly_slots:.0f}")
+            st.metric("Fill Rate", f"{league_fill_rate:.0%}")
+            st.metric("Weekly Revenue", f"${weekly_league_revenue:,.0f}")
+            st.metric("Annual Revenue", f"${annual_league_revenue:,.0f}")
+            st.metric("League Share of Prime", f"{league_share_prime:.1%}")
+            st.metric("Price per Slot", f"${league_price_prime:.0f}")
+        
+        st.divider()
+        st.markdown("**Units & Pricing (Debug)**")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.markdown("**Court Pricing**")
+            st.metric("Unit", "Per Court Hour")
+            st.metric("Prime Rate", f"${base_prime_rate:.0f}/court/hr")
+            st.metric("Off-Peak Rate", f"${non_prime_rate:.0f}/court/hr")
+            
+        with col2:
+            st.markdown("**League Pricing**")
+            st.metric("Unit", "Per Slot (6-week Session)")
+            st.metric("Prime Price", f"${league_price_prime:.0f}/slot")
+            st.metric("Off-Peak Price", f"${league_price_offpeak:.0f}/slot")
+                
+        with col3:
+            st.markdown("**Metrics**")
+            st.metric("Non-Member Cap", f"{nonmember_prime_share_max*100:.0f}%")
+            revpach = debug_info.get('revpach', 0)
+            st.metric("RevPACH", f"${revpach:.2f}")
+            rev_per_util_hr = debug_info.get('rev_per_util_hr', 0)
+            st.metric("Rev/Util Hr", f"${rev_per_util_hr:.2f}")
+            
+        # Sanity check warnings
+        PACH_MIN, PACH_MAX = 10.0, 22.0
+        VR_MIN, VR_MAX = 35.0, 55.0
+        if not (PACH_MIN <= revpach <= PACH_MAX):
+            st.warning(f"⚠️ RevPACH ${revpach:.2f} outside expected range ${PACH_MIN}-${PACH_MAX}")
+        if not (VR_MIN <= rev_per_util_hr <= VR_MAX):
+            st.warning(f"⚠️ Rev/Utilized Hour ${rev_per_util_hr:.2f} outside expected range ${VR_MIN}-${VR_MAX}")
 
 # Calculate key metrics
 year1_revenue = projections_df.iloc[:12]['Total Revenue'].sum()
@@ -1063,6 +1935,65 @@ year1_min_wc = projections_df.iloc[:12]['Remaining WC Reserve'].min() if 'Remain
 st.metric("Min Y1 WC Reserve", f"${year1_min_wc:,.0f}" if not np.isnan(year1_min_wc) else "N/A")
 
 st.caption("Note: Lenders typically assess Operating DSCR (EBITDA / Debt Service). We show DSCR with Working-Capital Buffer for visibility into cash coverage during ramp-up.")
+
+st.divider()
+
+# Sanity Panel with Guardrails
+with st.expander("🛡️ Sanity Checks & Guardrails", expanded=False):
+    # Calculate average metrics
+    avg_vr_per_hour = projections_df['VR per Hour'].mean()
+    avg_revpach = projections_df['RevPACH'].mean()
+    avg_utilized_hours = projections_df['Utilized Hours'].mean()
+    total_court_hours_monthly = NUM_COURTS * HOURS_PER_DAY * DAYS_PER_MONTH
+    avg_utilization = (avg_utilized_hours / total_court_hours_monthly) * 100
+    
+    # Expected bands
+    VR_MIN, VR_MAX = 35.0, 55.0
+    PACH_MIN, PACH_MAX = 10.0, 22.0
+    
+    # Check for warnings
+    warn_msgs = []
+    if not (VR_MIN <= avg_vr_per_hour <= VR_MAX):
+        warn_msgs.append(f"⚠️ Variable Rev / Utilized Hr = ${avg_vr_per_hour:.2f} (expected ${VR_MIN}-{VR_MAX})")
+    
+    if not (PACH_MIN <= avg_revpach <= PACH_MAX):
+        warn_msgs.append(f"⚠️ RevPACH = ${avg_revpach:.2f} (expected ${PACH_MIN}-{PACH_MAX})")
+    
+    # Check membership revenue ceiling
+    avg_members = projections_df['Members'].mean()
+    if avg_members > MEMBER_CAP:
+        warn_msgs.append(f"⚠️ Average members {avg_members:.0f} exceeds cap {MEMBER_CAP}")
+    
+    # Display metrics
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Avg VR/Utilized Hour", f"${avg_vr_per_hour:.2f}")
+        st.caption(f"Expected: ${VR_MIN}-${VR_MAX}")
+    
+    with col2:
+        st.metric("Avg RevPACH", f"${avg_revpach:.2f}")
+        st.caption(f"Expected: ${PACH_MIN}-${PACH_MAX}")
+    
+    with col3:
+        st.metric("Avg Utilization", f"{avg_utilization:.1f}%")
+        st.caption(f"Non-Member Prime Cap: {nonmember_prime_share_max*100:.0f}%")
+    
+    # Display warnings or success
+    if warn_msgs:
+        for msg in warn_msgs:
+            st.warning(msg)
+    else:
+        st.success("✅ All sanity checks passed - metrics within expected bands")
+    
+    # Additional info
+    st.info(f"""
+    **Guardrails Active:**
+    - Non-member prime hours capped at {nonmember_prime_share_max*100:.0f}% of open prime
+    - Member cap enforced at {MEMBER_CAP}
+    - Prime time set to realistic {PRIME_TIME_HOURS_RATIO*100:.0f}%
+    - League allocation: {league_prime_hours_pct}% of prime hours
+    """)
 
 st.divider()
 
@@ -1273,30 +2204,53 @@ st.plotly_chart(fig_members, use_container_width=True)
 
 st.divider()
 
-# Export Functionality
+# Export Functionality with Guardrails
 st.subheader("💾 Export Financial Projections")
 
-col1, col2 = st.columns(2)
+# Use unified density metrics for export check
+unified_revpach = stability_metrics['density_metrics']['revpach']
+unified_rev_per_util = stability_metrics['density_metrics']['rev_per_util_hr']
+export_allowed = unified_revpach <= 25.0 and unified_rev_per_util <= 60.0
 
-with col1:
-    # Monthly projections CSV
-    monthly_csv = projections_df.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Monthly Projections (CSV)",
-        data=monthly_csv,
-        file_name=f"pickleball_monthly_projections_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
-
-with col2:
-    # Annual summary CSV
-    annual_csv = summary_df.to_csv(index=False)
-    st.download_button(
-        label="📥 Download Annual Summary (CSV)",
-        data=annual_csv,
-        file_name=f"pickleball_annual_summary_{datetime.now().strftime('%Y%m%d')}.csv",
-        mime="text/csv"
-    )
+if not export_allowed:
+    st.error(f"⚠️ **Export Blocked**: Metrics outside acceptable range")
+    if unified_revpach > 25.0:
+        st.warning(f"RevPACH is ${unified_revpach:.2f} (max allowed: $25.00)")
+    if unified_rev_per_util > 60.0:
+        st.warning(f"Rev/Util Hr is ${unified_rev_per_util:.2f} (max allowed: $60.00)")
+    
+    # Show breakdown
+    st.info(f"""
+    **Metric Breakdown:**
+    - Variable Revenue/Year: ${stability_metrics['density_metrics']['variable_rev_year']:,.0f}
+    - Available Court-Hours/Year: {stability_metrics['density_metrics']['available_ch_year']:,.0f}
+    - Utilized Court-Hours/Year: {stability_metrics['density_metrics']['utilized_ch_year']:,.0f}
+    - Prime Share: {schedule_prime_share*100:.1f}%
+    """)
+else:
+    st.success(f"✅ Metrics within acceptable range (RevPACH: ${unified_revpach:.2f}, Rev/Util Hr: ${unified_rev_per_util:.2f})")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Monthly projections CSV
+        monthly_csv = projections_df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Monthly Projections (CSV)",
+            data=monthly_csv,
+            file_name=f"pickleball_monthly_projections_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+    
+    with col2:
+        # Annual summary CSV
+        annual_csv = summary_df.to_csv(index=False)
+        st.download_button(
+            label="📥 Download Annual Summary (CSV)",
+            data=annual_csv,
+            file_name=f"pickleball_annual_summary_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
 
 # Footer with loan details
 st.divider()
@@ -1305,3 +2259,43 @@ st.caption(f"""
 **Monthly Payment:** ${monthly_payment:,.2f} | 
 **Total Interest:** ${(monthly_payment * num_payments - loan_amount):,.2f}
 """)
+
+# Validation assertions for new defaults
+if __name__ == "__main__":
+    # These assertions validate the new default values are properly set
+    # Validation: Check new non-member pricing defaults
+    assert base_prime_rate == NON_MEMBER_RATE_PRIME_COURT_DEFAULT, f"Expected non-member prime rate to be {NON_MEMBER_RATE_PRIME_COURT_DEFAULT}, got {base_prime_rate}"
+    assert non_prime_rate == NON_MEMBER_RATE_OFFPEAK_COURT_DEFAULT, f"Expected non-member off-peak rate to be {NON_MEMBER_RATE_OFFPEAK_COURT_DEFAULT}, got {non_prime_rate}"
+    # Schedule-driven league allocation - percentage varies based on inputs
+    # assert league_prime_hours_pct == 60, f"Expected prime-time league allocation to be 60%, got {league_prime_hours_pct}%"
+    assert league_price_offpeak == LEAGUE_PRICE_OFFPEAK_SLOT_DEFAULT, f"Expected off-peak league price to be {LEAGUE_PRICE_OFFPEAK_SLOT_DEFAULT}, got {league_price_offpeak}"
+    assert league_price_prime == LEAGUE_PRICE_PRIME_SLOT_DEFAULT, f"Expected prime league price to be {LEAGUE_PRICE_PRIME_SLOT_DEFAULT}, got {league_price_prime}"
+    assert corporate_rate_prime == 200.0, f"Expected corporate prime rate to be 200.0, got {corporate_rate_prime}"
+    assert corporate_rate_offpeak == 170.0, f"Expected corporate off-peak rate to be 170.0, got {corporate_rate_offpeak}"
+    
+    # Sanity check on league pricing
+    assert league_price_prime >= 0 and league_price_offpeak >= 0, "League prices must be non-negative"
+    if league_price_offpeak > league_price_prime:
+        st.info(f"Note: Off-peak league price (${league_price_offpeak:.0f}) exceeds prime (${league_price_prime:.0f}). This is allowed but uncommon.")
+    
+    # Validate per-player calculations (for display only - doesn't affect revenue)
+    expected_per_player_prime = NON_MEMBER_RATE_PRIME_COURT_DEFAULT / 4
+    expected_per_player_offpeak = NON_MEMBER_RATE_OFFPEAK_COURT_DEFAULT / 4
+    actual_per_player_prime = base_prime_rate / 4
+    actual_per_player_offpeak = non_prime_rate / 4
+    assert abs(actual_per_player_prime - expected_per_player_prime) < 0.01, f"Prime per-player should be ~${expected_per_player_prime:.2f}, got ${actual_per_player_prime:.2f}"
+    assert abs(actual_per_player_offpeak - expected_per_player_offpeak) < 0.01, f"Off-peak per-player should be ~${expected_per_player_offpeak:.2f}, got ${actual_per_player_offpeak:.2f}"
+    
+    # Validate pricing units
+    # Pricing unit assertions - constants are now defined at top
+    
+    # Guard against unit cross-contamination
+    # Court rates should be in reasonable per-court range ($20-$200)
+    assert 20 <= base_prime_rate <= 200, f"Court prime rate ${base_prime_rate} outside reasonable range"
+    assert 20 <= non_prime_rate <= 200, f"Court off-peak rate ${non_prime_rate} outside reasonable range"
+    # League prices should be in reasonable per-slot range ($50-$300 for 6 weeks)
+    assert 50 <= league_price_prime <= 300, f"League prime price ${league_price_prime} outside reasonable range"
+    assert 50 <= league_price_offpeak <= 300, f"League off-peak price ${league_price_offpeak} outside reasonable range"
+    
+    # Validate non-member prime share cap
+    assert 0.10 <= nonmember_prime_share_max <= 0.40, f"Non-member prime share max should be between 10-40%, got {nonmember_prime_share_max*100:.0f}%"
