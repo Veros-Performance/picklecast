@@ -1,0 +1,7 @@
+Category,Tier,Prime_Rate,Off_Peak_Rate,Unit,Conversion
+Non-Member Court,-,65,56,$/court/hr,Direct
+Member Court,Community,56.0,44.0,$/court/hr,14.0x4
+Member Court,Player,36.0,0.0,$/court/hr,9.0x4
+Member Court,Pro,0.0,0.0,$/court/hr,0.0x4
+League,Non-Member,150.0,100.0,$/player/6wk,Direct
+Corporate,-,200.0,170.0,$/court/hr,Direct

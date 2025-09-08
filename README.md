@@ -1,10 +1,20 @@
 # Pickleball Facility Financial Model
 
-Validated financial projections for indoor pickleball facilities based on real market data.
+Engine-based financial projections for indoor pickleball facilities with tiered member pricing.
 
-## 📈 Current Status
+## 🚀 Architecture Update (2025)
 
-This model represents a validated financial framework for Veros Pickleball operations, achieving 84.8% accuracy against real facility data. It serves as the foundation for investor presentations, business planning, and franchise scaling strategies.
+The application has been refactored to use a clean separation between business logic (engine) and UI:
+- **`app.py`** (250 lines) - Minimal Streamlit UI that uses engine as single source of truth
+- **`engine/`** - All business logic, pricing models, and calculations
+- **`app_legacy.py`** (2,564 lines) - Preserved for reference only, DO NOT EDIT
+
+## 📈 Current Features
+
+- **Tiered Member Pricing**: Community ($14/$11), Player ($9/$0), Pro ($0/$0) per person/hour
+- **League Discounts**: 0%/15%/25% based on member tier
+- **Engine-based Calculations**: All metrics computed via `engine.compute()`
+- **Export Guardrails**: RevPACH < $25, Rev/Util Hr < $60
 
 ## Overview
 
@@ -37,10 +47,23 @@ The model achieves **84.8% accuracy** when validated against real facility reven
 
 ## Usage
 
-Run the Streamlit app:
+Run the new engine-based app:
 ```bash
 streamlit run app.py
 ```
+
+To view the legacy app (reference only):
+```bash
+streamlit run app_legacy.py
+```
+
+## Development
+
+All new development should target:
+- `engine/` for business logic changes
+- `app.py` for UI changes
+
+**DO NOT EDIT `app_legacy.py`** - it is preserved for reference only.
 
 ## Data Input
 

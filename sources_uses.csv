@@ -1,0 +1,12 @@
+Type,Item,Amount
+Use,Leasehold Improvements,994000.0
+Use,Equipment/FF&E,220000.0
+Use,Pre-opening,50000
+Use,Working Capital,200000.0
+Use,Contingency,99400.0
+Source,TI Allowance,428475.0
+Source,Owner Equity,200000
+Source,SBA Loan (computed),934925.0
+Total,Uses,1563400.0
+Total,Sources,1563400.0
+Check,Balanced,True

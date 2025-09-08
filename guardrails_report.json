@@ -1,0 +1,52 @@
+{
+  "timestamp": "2025-09-07T22:02:20.981101",
+  "checks": [
+    {
+      "name": "Utilized \u2264 Available Hours",
+      "pass": true,
+      "value": "15054 \u2264 20384",
+      "status": "\u2713"
+    },
+    {
+      "name": "League Hours \u2264 Prime Hours",
+      "pass": true,
+      "value": "100 \u2264 116",
+      "status": "\u2713"
+    },
+    {
+      "name": "League Weeks/Year \u2248 46",
+      "pass": true,
+      "value": "46.0 \u2248 46",
+      "status": "\u2713"
+    },
+    {
+      "name": "Membership \u2264 Cap",
+      "pass": true,
+      "value": "348 \u2264 350",
+      "status": "\u2713"
+    },
+    {
+      "name": "RevPACH \u2264 $35",
+      "pass": false,
+      "value": "$38.43",
+      "status": "\u26a0\ufe0f WATCHLIST"
+    },
+    {
+      "name": "Balance Sheet Balances",
+      "pass": true,
+      "value": "All months",
+      "status": "\u2713"
+    },
+    {
+      "name": "Player Off-Peak = $0/court",
+      "pass": true,
+      "value": "$0.00",
+      "status": "\u2713"
+    }
+  ],
+  "summary": {
+    "total_checks": 7,
+    "passed": 6,
+    "failed": 1
+  }
+}
