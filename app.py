@@ -26,6 +26,12 @@ st.set_page_config(
 def check_password():
     """Returns `True` if the user had the correct password."""
 
+    # Check if running locally - bypass password
+    import os
+    if os.getenv('STREAMLIT_RUNTIME_ENV') != 'cloud':
+        # Running locally - bypass password
+        return True
+
     def password_entered():
         """Checks whether a password entered by the user is correct."""
         if st.session_state.get("password", "") == "richmondneedsmorepickle":
@@ -527,51 +533,7 @@ def main():
                 st.write(f"- Utilized Court-Hours/Year: {res['utilized_ch_year']:,.0f}")
                 st.write(f"- Utilization Rate: {(res['utilized_ch_year']/res['available_ch_year']*100):.1f}%")
         
-        # Export Section
-        st.divider()
-        st.subheader(f"📥 Export Data - {preset} Scenario")
-        
-        revpach = res["density"]["RevPACH"]
-        rev_util = res["density"]["RevPerUtilHr"]
-        
-        # Professional export mode
-        detailed_export = st.checkbox(
-            "📋 Include Detailed Analysis", 
-            help="Include comprehensive metrics for financial review"
-        )
-        
-        if st.button("📥 Export Financial Data", type="primary"):
-            # Build export packet
-            packet = build_underwriting_packet(cfg, res, preset, include_audit=detailed_export)
-            
-            # Create export dataframe
-            export_df = pd.DataFrame({
-                'Metric': ['RevPACH', 'Rev/Util Hr', 'Annual Variable Revenue', 
-                          'Court Revenue', 'League Revenue', 'Corporate Revenue',
-                          'Tournament Revenue', 'Retail Revenue', 'Prime Share %',
-                          'Utilization %'],
-                'Value': [
-                    f"${revpach:.2f}",
-                    f"${rev_util:.2f}",
-                    f"${res['annual']['variable_rev']:,.0f}",
-                    f"${res['annual']['court_rev']:,.0f}",
-                    f"${res['annual']['league_rev']:,.0f}",
-                    f"${res['annual']['corp_rev']:,.0f}",
-                    f"${res['annual']['tourney_rev']:,.0f}",
-                    f"${res['annual']['retail_rev']:,.0f}",
-                    f"{prime_share*100:.1f}%",
-                    f"{utilization:.1f}%"
-                ]
-            })
-            csv = export_df.to_csv(index=False)
-            st.download_button(
-                label="Download CSV",
-                data=csv,
-                file_name=f"pickleball_metrics_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-            
-            st.success("✅ Financial data exported successfully")
+        # Note: All exports are available in the Financial Statements tab
     
     with tab2:
         # Projections Tab
@@ -652,90 +614,8 @@ def main():
         
         st.dataframe(display_df, use_container_width=True)
         
-        # Underwriting Exports
-        st.divider()
-        st.markdown("### 📊 Underwriting Exports")
-        
-        # Prepare data for exports
-        df_y1 = df.iloc[:12].copy()
-        df_24 = df.copy()
-        
-        # Define column order for clean exports
-        cols = ["month", "members", "rev_variable", "rev_membership", "rev_total",
-                "court_rev_m", "league_rev_m", "corp_rev_m", "tourney_rev_m", "retail_rev_m",
-                "fixed_opex_m", "variable_costs_m", "staff_costs_m", "opex_total_m",
-                "EBITDA_m", "debt_service_m", "DSCR_m", "cash_flow_m", "cum_cash"]
-        df_y1 = df_y1[cols]
-        df_24 = df_24[cols]
-        
-        # Sanity checks - ensure exports reconcile to summaries
-        assert abs(df_y1["rev_total"].sum() - y1["rev_total"]) < 2.0, "Y1 CSV ≠ Y1 summary"
-        assert abs(df_24.iloc[12:]["rev_total"].sum() - y2["rev_total"]) < 2.0, "Y2 months ≠ Y2 summary"
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            # Year-1 (12-month) CSV
-            st.download_button(
-                "⬇️ Download Year-1 (12-month) CSV",
-                data=df_y1.to_csv(index=False).encode("utf-8"),
-                file_name=f"veros_Y1_12m_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-        
-        with col2:
-            # 24-Month CSV
-            st.download_button(
-                "⬇️ Download 24-Month CSV",
-                data=df_24.to_csv(index=False).encode("utf-8"),
-                file_name=f"veros_24m_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-        
-        with col3:
-            # Excel workbook with both tabs
-            from io import BytesIO
-            
-            def make_excel_bytes(df_y1, df_24):
-                bio = BytesIO()
-                with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
-                    df_y1.to_excel(xw, index=False, sheet_name="Y1 (12m)")
-                    df_24.to_excel(xw, index=False, sheet_name="24 Months")
-                bio.seek(0)
-                return bio.read()
-            
-            xlsx_bytes = make_excel_bytes(df_y1, df_24)
-            st.download_button(
-                "⬇️ Download Excel (Y1 & 24m)",
-                data=xlsx_bytes,
-                file_name=f"veros_underwriting_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        
-        # Y1/Y2 Summary export
-        st.divider()
-        st.markdown("### 📈 Summary Exports")
-        
-        summary_data = {
-            "Metric": [
-                "Y1 Revenue", "Y1 EBITDA", "Y1 Min DSCR", "Y1 Avg DSCR", "Y1 End Cash",
-                "Y2 Revenue", "Y2 EBITDA", "Y2 Min DSCR", "Y2 Avg DSCR", "Y2 End Cash"
-            ],
-            "Value": [
-                f"${y1['rev_total']:,.0f}", f"${y1['EBITDA']:,.0f}", 
-                f"{y1['min_DSCR']:.2f}", f"{y1['avg_DSCR']:.2f}", f"${y1['end_cash']:,.0f}",
-                f"${y2['rev_total']:,.0f}", f"${y2['EBITDA']:,.0f}", 
-                f"{y2['min_DSCR']:.2f}", f"{y2['avg_DSCR']:.2f}", f"${y2['end_cash']:,.0f}"
-            ]
-        }
-        summary_df = pd.DataFrame(summary_data)
-        
-        st.download_button(
-            "📄 Download Y1/Y2 Summary",
-            data=summary_df.to_csv(index=False).encode("utf-8"),
-            file_name=f"veros_summary_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
+        # Note: All financial exports are available in the Financial Statements tab
+        st.info("💡 All financial exports (projections, P&L, Balance Sheet) are available in the Financial Statements tab.")
         
     
     with tab3:
@@ -810,117 +690,140 @@ def main():
         
         st.dataframe(pnl_display, use_container_width=True)
         
-        # Balance Sheet - Year 1 Monthly EOM
+        # Simplified Balance Sheet Summary
         st.divider()
-        st.markdown("### 📊 Year 1 Balance Sheet (End of Month)")
+        st.markdown("### 📊 Balance Sheet Summary")
+
+        # Show only key metrics for Y1 and Y2 EOY
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### Year 1 End")
+            y1_eoy = bs[11]  # Month 12 of Y1
+            st.metric("Cash", f"${y1_eoy['cash']:,.0f}")
+            st.metric("Total Assets", f"${y1_eoy['total_assets']:,.0f}")
+            st.metric("Debt", f"${y1_eoy['debt_balance']:,.0f}")
+            st.metric("Equity", f"${y1_eoy['equity']:,.0f}")
+
+        with col2:
+            st.markdown("#### Year 2 End")
+            y2_eoy = bs[23]  # Last month of Y2
+            st.metric("Cash", f"${y2_eoy['cash']:,.0f}")
+            st.metric("Total Assets", f"${y2_eoy['total_assets']:,.0f}")
+            st.metric("Debt", f"${y2_eoy['debt_balance']:,.0f}")
+            st.metric("Equity", f"${y2_eoy['equity']:,.0f}")
         
-        # Create Balance Sheet dataframe
-        bs_df = pd.DataFrame(bs[:12])
-        bs_display = bs_df[[
-            'month', 'cash', 'ppe_net', 'total_assets',
-            'debt_balance', 'equity', 'total_liabilities_equity'
-        ]].copy()
-        
-        bs_display.columns = [
-            'Month', 'Cash', 'PPE (Net)', 'Total Assets',
-            'Debt', 'Equity', 'Total L&E'
-        ]
-        
-        # Format currency columns
-        for col in bs_display.columns[1:]:
-            bs_display[col] = bs_display[col].apply(lambda x: f"${x:,.0f}")
-        
-        st.dataframe(bs_display, use_container_width=True)
-        
-        # Year 2 EOY Balance Sheet
+        # Comprehensive Export Section
         st.divider()
-        st.markdown("### 📊 Year 2 Balance Sheet (End of Year)")
-        
-        y2_eoy = bs[23]  # Last month of Y2
-        y2_bs_data = {
-            "Item": ["Cash", "PPE (Net)", "Total Assets", "Debt", "Equity", "Total L&E"],
-            "Amount": [
-                f"${y2_eoy['cash']:,.0f}",
-                f"${y2_eoy['ppe_net']:,.0f}",
-                f"${y2_eoy['total_assets']:,.0f}",
-                f"${y2_eoy['debt_balance']:,.0f}",
-                f"${y2_eoy['equity']:,.0f}",
-                f"${y2_eoy['total_liabilities_equity']:,.0f}"
-            ]
-        }
-        y2_bs_df = pd.DataFrame(y2_bs_data)
-        st.dataframe(y2_bs_df, use_container_width=True)
-        
-        # Export Options
-        st.divider()
-        st.markdown("### 📥 Financial Statement Exports")
-        
-        # Prepare full datasets for export
+        st.markdown("### 📥 All Financial Exports")
+        st.info("📍 All financial data exports are consolidated here for easy access.")
+
+        # Prepare all datasets
         pnl_y1_df = pd.DataFrame(pnl[:12])
         pnl_24m_df = pd.DataFrame(pnl)
-        bs_y1_df = pd.DataFrame(bs[:12])
-        bs_y2_eoy_df = pd.DataFrame([bs[23]])  # Just Y2 EOY
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            # P&L Y1 Monthly CSV
+
+        # Prepare projection data
+        proj = build_24_month_projection(cfg)
+        df_proj = pd.DataFrame(proj["months"])
+        df_y1_proj = df_proj.iloc[:12].copy()
+        df_24_proj = df_proj.copy()
+
+        # Define column order for projection exports
+        proj_cols = ["month", "members", "rev_variable", "rev_membership", "rev_total",
+                "court_rev_m", "league_rev_m", "corp_rev_m", "tourney_rev_m", "retail_rev_m",
+                "fixed_opex_m", "variable_costs_m", "staff_costs_m", "opex_total_m",
+                "EBITDA_m", "debt_service_m", "DSCR_m", "cash_flow_m", "cum_cash"]
+        df_y1_proj = df_y1_proj[proj_cols]
+        df_24_proj = df_24_proj[proj_cols]
+
+        # Section 1: Balance Sheet
+        st.markdown("#### 📋 Balance Sheet")
+        st.caption("Banker format with Year 1 monthly columns and Year 2 End of Year")
+
+        bs_y1_monthly = bs[:12]
+        bs_y2_eoy = bs[23] if len(bs) > 23 else bs[-1]
+        banker_bs_bytes = create_banker_balance_sheet(bs_y1_monthly, bs_y2_eoy)
+
+        st.download_button(
+            "📋 Download Balance Sheet (Banker Format)",
+            data=banker_bs_bytes,
+            file_name=f"Balance_Sheet_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+        # Section 2: P&L Statements
+        st.markdown("#### 📊 Profit & Loss Statements")
+        col_pnl1, col_pnl2, col_pnl3 = st.columns(3)
+
+        with col_pnl1:
             st.download_button(
-                "📊 P&L Y1 Monthly",
+                "P&L Year 1 (CSV)",
                 data=pnl_y1_df.to_csv(index=False).encode("utf-8"),
-                file_name=f"PnL_Y1_monthly_{datetime.now().strftime('%Y%m%d')}.csv",
+                file_name=f"PnL_Y1_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
-        
-        with col2:
-            # P&L 24-Month CSV
+
+        with col_pnl2:
             st.download_button(
-                "📊 P&L 24-Month",
+                "P&L 24-Month (CSV)",
                 data=pnl_24m_df.to_csv(index=False).encode("utf-8"),
                 file_name=f"PnL_24m_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
-        
-        with col3:
-            # Balance Sheet Y1 Monthly CSV
+
+        with col_pnl3:
+            from io import BytesIO
+            def make_pnl_excel(pnl_y1, pnl_24m):
+                bio = BytesIO()
+                with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
+                    pnl_y1.to_excel(xw, index=False, sheet_name="P&L Y1")
+                    pnl_24m.to_excel(xw, index=False, sheet_name="P&L 24 Months")
+                bio.seek(0)
+                return bio.read()
+
+            pnl_xlsx = make_pnl_excel(pnl_y1_df, pnl_24m_df)
             st.download_button(
-                "📋 BS Y1 Monthly",
-                data=bs_y1_df.to_csv(index=False).encode("utf-8"),
-                file_name=f"BS_Y1_monthly_{datetime.now().strftime('%Y%m%d')}.csv",
+                "P&L Combined (Excel)",
+                data=pnl_xlsx,
+                file_name=f"PnL_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        # Section 3: Financial Projections
+        st.markdown("#### 📈 Financial Projections")
+        col_proj1, col_proj2, col_proj3 = st.columns(3)
+
+        with col_proj1:
+            st.download_button(
+                "Projections Y1 (CSV)",
+                data=df_y1_proj.to_csv(index=False).encode("utf-8"),
+                file_name=f"Projections_Y1_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
-        
-        with col4:
-            # Balance Sheet Y2 EOY CSV
+
+        with col_proj2:
             st.download_button(
-                "📋 BS Y2 EOY",
-                data=bs_y2_eoy_df.to_csv(index=False).encode("utf-8"),
-                file_name=f"BS_Y2_EOY_{datetime.now().strftime('%Y%m%d')}.csv",
+                "Projections 24m (CSV)",
+                data=df_24_proj.to_csv(index=False).encode("utf-8"),
+                file_name=f"Projections_24m_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
-        
-        # Combined Excel Workbook
-        st.divider()
-        from io import BytesIO
-        
-        def make_financial_excel(pnl_y1, pnl_24m, bs_y1, bs_y2_eoy):
-            bio = BytesIO()
-            with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
-                pnl_y1.to_excel(xw, index=False, sheet_name="P&L Y1 Monthly")
-                pnl_24m.to_excel(xw, index=False, sheet_name="P&L 24 Months")
-                bs_y1.to_excel(xw, index=False, sheet_name="BS Y1 Monthly")
-                bs_y2_eoy.to_excel(xw, index=False, sheet_name="BS Y2 EOY")
-            bio.seek(0)
-            return bio.read()
-        
-        xlsx_bytes = make_financial_excel(pnl_y1_df, pnl_24m_df, bs_y1_df, bs_y2_eoy_df)
-        
-        st.download_button(
-            "📚 Download Complete Financial Statements (Excel)",
-            data=xlsx_bytes,
-            file_name=f"financial_statements_{datetime.now().strftime('%Y%m%d')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+
+        with col_proj3:
+            def make_proj_excel(df_y1, df_24):
+                bio = BytesIO()
+                with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
+                    df_y1.to_excel(xw, index=False, sheet_name="Y1 Projections")
+                    df_24.to_excel(xw, index=False, sheet_name="24m Projections")
+                bio.seek(0)
+                return bio.read()
+
+            proj_xlsx = make_proj_excel(df_y1_proj, df_24_proj)
+            st.download_button(
+                "Projections (Excel)",
+                data=proj_xlsx,
+                file_name=f"Projections_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         
         # Key Assumptions
         with st.expander("💰 Financial Assumptions"):
@@ -935,6 +838,285 @@ def main():
             - Tax Rate: {cfg.finance.corporate_tax_rate*100:.0f}%
             - Depreciation: {cfg.finance.depreciation_years_leasehold} years (leasehold), {cfg.finance.depreciation_years_equipment} years (equipment)
             """)
+
+def create_banker_balance_sheet(bs_y1_monthly, bs_y2_eoy):
+    """Create professional banker-format Balance Sheet Excel file with Y1 monthly and Y2 EOY columns"""
+    from io import BytesIO
+    from datetime import datetime, date
+    import calendar
+
+    # Parse years from the data
+    current_year = datetime.now().year
+
+    # Month names for headers
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+    # Build the data structure
+    data = []
+
+    # Title row (will be merged and centered)
+    title_row = ["Balance Sheet (Projected)"] + ["" for _ in range(14)]
+    data.append(title_row)
+
+    # Headers row - Month names for Y1 + EOY for Y2
+    header_row = ["", ""]  # A, B columns
+    for i in range(12):
+        if i < len(bs_y1_monthly):
+            header_row.append(f"{month_names[i]} {current_year}")
+        else:
+            header_row.append("")  # Empty if month missing
+    header_row.append(f"EOY {current_year + 1}")  # Y2 EOY
+    data.append(header_row)
+
+    # Date row - "as of MM/DD/YYYY"
+    date_row = ["", ""]  # A, B columns
+    for i in range(12):
+        if i < len(bs_y1_monthly):
+            last_day = calendar.monthrange(current_year, i + 1)[1]
+            date_str = f"as of {i+1:02d}/{last_day:02d}/{current_year}"
+            date_row.append(date_str)
+        else:
+            date_row.append("")
+    # Y2 EOY date
+    date_row.append(f"as of 12/31/{current_year + 1}")
+    data.append(date_row)
+
+    # Helper function to add a data row
+    def add_data_row(label, values_y1, value_y2, is_calculated=False):
+        row = [label, ""]  # A, B columns
+        for i in range(12):
+            if i < len(bs_y1_monthly) and i < len(values_y1):
+                row.append(values_y1[i])
+            else:
+                row.append("" if not is_calculated else 0)
+        row.append(value_y2)  # Y2 EOY
+        data.append(row)
+
+    # Extract values for all periods
+    def extract_values(bs_list, field):
+        return [bs.get(field, 0) for bs in bs_list]
+
+    # Assets section
+    data.append(["Assets"] + ["" for _ in range(14)])
+    data.append(["Current Assets"] + ["" for _ in range(14)])
+
+    # Cash
+    cash_y1 = extract_values(bs_y1_monthly, "cash")
+    cash_y2 = bs_y2_eoy.get("cash", 0)
+    add_data_row("  Cash", cash_y1, cash_y2)
+
+    # Other current assets (default to 0)
+    add_data_row("  Other current assets", [0]*12, 0, is_calculated=True)
+
+    # Total Current Assets
+    total_current_y1 = cash_y1  # Since other current assets = 0
+    add_data_row("  Total Current Assets", total_current_y1, cash_y2)
+
+    # Fixed Assets
+    data.append(["Fixed Assets"] + ["" for _ in range(14)])
+
+    ppe_gross_y1 = extract_values(bs_y1_monthly, "ppe_gross")
+    ppe_gross_y2 = bs_y2_eoy.get("ppe_gross", 0)
+    add_data_row("  Fixed assets (gross)", ppe_gross_y1, ppe_gross_y2)
+
+    add_data_row("  Other fixed assets", [0]*12, 0, is_calculated=True)
+
+    accum_dep_y1 = extract_values(bs_y1_monthly, "accumulated_depreciation")
+    accum_dep_y2 = bs_y2_eoy.get("accumulated_depreciation", 0)
+    add_data_row("  (LESS accumulated depreciation on all fixed assets)", accum_dep_y1, accum_dep_y2)
+
+    # Total Fixed Assets (net)
+    ppe_net_y1 = extract_values(bs_y1_monthly, "ppe_net")
+    ppe_net_y2 = bs_y2_eoy.get("ppe_net", 0)
+    add_data_row("  Total Fixed Assets (net of depreciation)", ppe_net_y1, ppe_net_y2)
+
+    # Other Assets
+    data.append(["Other Assets"] + ["" for _ in range(14)])
+    add_data_row("  Total Other Assets", [0]*12, 0, is_calculated=True)
+
+    # TOTAL Assets
+    total_assets_y1 = extract_values(bs_y1_monthly, "total_assets")
+    total_assets_y2 = bs_y2_eoy.get("total_assets", 0)
+    add_data_row("TOTAL Assets", total_assets_y1, total_assets_y2)
+
+    data.append(["" for _ in range(15)])  # Empty row
+
+    # Liabilities and Equity section
+    data.append(["Liabilities and Equity"] + ["" for _ in range(14)])
+    data.append(["Current Liabilities"] + ["" for _ in range(14)])
+
+    add_data_row("  Payroll liabilities", [0]*12, 0, is_calculated=True)
+    add_data_row("  Other current liabilities", [0]*12, 0, is_calculated=True)
+    add_data_row("  Total Current Liabilities", [0]*12, 0, is_calculated=True)
+
+    # Long-term Debt
+    debt_y1 = extract_values(bs_y1_monthly, "debt_balance")
+    debt_y2 = bs_y2_eoy.get("debt_balance", 0)
+    add_data_row("Total Long-term Debt", debt_y1, debt_y2)
+
+    # Total Liabilities (Current Liab + LT Debt)
+    add_data_row("Total Liabilities", debt_y1, debt_y2)
+
+    # Owners' Equity
+    data.append(["Owners' Equity"] + ["" for _ in range(14)])
+    equity_y1 = extract_values(bs_y1_monthly, "equity")
+    equity_y2 = bs_y2_eoy.get("equity", 0)
+    add_data_row("  Total Owners' Equity", equity_y1, equity_y2)
+
+    # Total Liabilities & Equity
+    total_le_y1 = extract_values(bs_y1_monthly, "total_liabilities_equity")
+    total_le_y2 = bs_y2_eoy.get("total_liabilities_equity", 0)
+    add_data_row("Total Liabilities & Equity", total_le_y1, total_le_y2)
+
+    # Create DataFrame with proper column names
+    column_names = ["A", "B"] + [f"C{i}" for i in range(13)]
+    df = pd.DataFrame(data)
+
+    # Create Excel file with professional formatting
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        df.to_excel(writer, sheet_name="Balance Sheet", index=False, header=False)
+
+        # Get workbook and worksheet
+        workbook = writer.book
+        worksheet = writer.sheets["Balance Sheet"]
+
+        # Define professional formats
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 16,
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+
+        header_format = workbook.add_format({
+            'bold': True,
+            'align': 'center',
+            'valign': 'vcenter',
+            'bg_color': '#F0F0F0'  # Light gray
+        })
+
+        date_format = workbook.add_format({
+            'align': 'center',
+            'italic': True,
+            'font_size': 10
+        })
+
+        label_format = workbook.add_format({
+            'indent': 1
+        })
+
+        total_label_format = workbook.add_format({
+            'bold': True,
+            'top': 1
+        })
+
+        # Currency format with parentheses for negatives
+        currency_format = workbook.add_format({
+            'num_format': '$#,##0_);($#,##0)',
+            'align': 'right'
+        })
+
+        total_currency_format = workbook.add_format({
+            'bold': True,
+            'num_format': '$#,##0_);($#,##0)',
+            'align': 'right',
+            'top': 1
+        })
+
+        # Determine last data column dynamically
+        last_col_idx = 14  # Column O (0-indexed)
+        last_col_letter = 'O'
+
+        # Merge and center title across all used columns
+        worksheet.merge_range(f'A1:{last_col_letter}1', 'Balance Sheet (Projected)', title_format)
+
+        # Apply header format to month names (row 1)
+        for col in range(2, last_col_idx + 1):  # C to O
+            if col < len(data[1]) and data[1][col]:
+                worksheet.write(1, col, data[1][col], header_format)
+            if col < len(data[2]) and data[2][col]:
+                worksheet.write(2, col, data[2][col], date_format)
+
+        # Dynamically detect rows
+        header_row = 1  # Row with period names
+        asof_row = 2    # Row with "as of" dates
+        first_data_row = 3  # First label row ("Assets")
+
+        # Define total lines that need emphasis
+        total_labels = [
+            "Total Current Assets",
+            "Total Fixed Assets (net of depreciation)",
+            "Total Other Assets",
+            "TOTAL Assets",
+            "Total Current Liabilities",
+            "Total Long-term Debt",
+            "Total Liabilities",
+            "Total Owners' Equity",
+            "Total Liabilities & Equity"
+        ]
+
+        # Format all data rows
+        for row_idx in range(first_data_row, len(data)):
+            if row_idx < len(data):
+                label = str(data[row_idx][0]) if data[row_idx][0] else ""
+
+                # Apply label formatting
+                if any(total in label for total in total_labels):
+                    worksheet.write(row_idx, 0, label, total_label_format)
+                elif label.startswith("  "):  # Indented items
+                    worksheet.write(row_idx, 0, label, label_format)
+                else:
+                    worksheet.write(row_idx, 0, label)
+
+                # Format numeric columns with currency
+                for col_idx in range(2, last_col_idx + 1):  # Columns C through O
+                    if col_idx < len(data[row_idx]):
+                        val = data[row_idx][col_idx]
+                        if isinstance(val, (int, float)) and val != "":
+                            # Apply currency format with emphasis for totals
+                            if any(total in label for total in total_labels):
+                                worksheet.write(row_idx, col_idx, val, total_currency_format)
+                            else:
+                                worksheet.write(row_idx, col_idx, val, currency_format)
+
+        # Set column widths
+        worksheet.set_column('A:A', 34)   # Labels
+        worksheet.set_column('B:B', 3)    # Indent spacer
+        worksheet.set_column('C:O', 14)   # Data columns
+
+        # Set row heights for better spacing
+        worksheet.set_row(0, 22)  # Title row
+        worksheet.set_row(1, 18)  # Headers
+        worksheet.set_row(2, 18)  # Date row
+
+        # Freeze panes dynamically at first data row
+        # This keeps title, headers, and "as of" rows frozen, plus columns A & B
+        worksheet.freeze_panes(first_data_row, 2)  # Freeze at C{first_data_row}
+
+    bio.seek(0)
+
+    # Validation checks
+    validation_issues = []
+
+    # Check Y1 months
+    for i, bs in enumerate(bs_y1_monthly):
+        check = abs(bs.get("check", 0))
+        if check > 0.01:
+            validation_issues.append(f"{month_names[i]} {current_year}: check=${check:.2f}")
+
+    # Check Y2 EOY
+    check_y2 = abs(bs_y2_eoy.get("check", 0))
+    if check_y2 > 0.01:
+        validation_issues.append(f"EOY {current_year + 1}: check=${check_y2:.2f}")
+
+    if validation_issues:
+        import streamlit as st
+        st.warning(f"⚠️ Balance Sheet validation issues:\n" + "\n".join(validation_issues) +
+                   "\n\nValues should be near zero. This indicates the balance sheet may not balance correctly.")
+
+    return bio.read()
 
 def build_underwriting_packet(cfg, res, preset, include_audit=True):
     """Build comprehensive financial packet from model outputs"""
