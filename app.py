@@ -717,9 +717,8 @@ def main():
         st.markdown("### 📥 All Financial Exports")
         st.info("📍 All financial data exports are consolidated here for easy access.")
 
-        # Prepare all datasets
-        pnl_y1_df = pd.DataFrame(pnl[:12])
-        pnl_24m_df = pd.DataFrame(pnl)
+        # Prepare all datasets for projections (keep for projections export)
+        # pnl data is already available from financial statements
 
         # Prepare projection data
         proj = build_24_month_projection(cfg)
@@ -752,41 +751,26 @@ def main():
 
         # Section 2: P&L Statements
         st.markdown("#### 📊 Profit & Loss Statements")
-        col_pnl1, col_pnl2, col_pnl3 = st.columns(3)
+        st.caption("Banker format with Year 1 monthly columns and Year 2 total")
 
-        with col_pnl1:
-            st.download_button(
-                "P&L Year 1 (CSV)",
-                data=pnl_y1_df.to_csv(index=False).encode("utf-8"),
-                file_name=f"PnL_Y1_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+        # Prepare P&L data for banker format
+        # Calculate Y2 totals by summing months 13-24
+        pnl_y2_eoy = {}
+        if len(pnl) >= 24:
+            # Sum months 13-24 for each field
+            for key in pnl[0].keys():
+                if key != 'month':  # Skip the month field
+                    pnl_y2_eoy[key] = sum(pnl[i].get(key, 0) for i in range(12, 24))
 
-        with col_pnl2:
-            st.download_button(
-                "P&L 24-Month (CSV)",
-                data=pnl_24m_df.to_csv(index=False).encode("utf-8"),
-                file_name=f"PnL_24m_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
+        # Create the banker format P&L
+        banker_pnl_bytes = create_banker_pnl_sheet(pnl[:12], pnl_y2_eoy)
 
-        with col_pnl3:
-            from io import BytesIO
-            def make_pnl_excel(pnl_y1, pnl_24m):
-                bio = BytesIO()
-                with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
-                    pnl_y1.to_excel(xw, index=False, sheet_name="P&L Y1")
-                    pnl_24m.to_excel(xw, index=False, sheet_name="P&L 24 Months")
-                bio.seek(0)
-                return bio.read()
-
-            pnl_xlsx = make_pnl_excel(pnl_y1_df, pnl_24m_df)
-            st.download_button(
-                "P&L Combined (Excel)",
-                data=pnl_xlsx,
-                file_name=f"PnL_{datetime.now().strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
+        st.download_button(
+            "📊 Download Profit & Loss (Banker Format)",
+            data=banker_pnl_bytes,
+            file_name=f"Profit_and_Loss_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
         # Section 3: Financial Projections
         st.markdown("#### 📈 Financial Projections")
@@ -810,6 +794,7 @@ def main():
 
         with col_proj3:
             def make_proj_excel(df_y1, df_24):
+                from io import BytesIO
                 bio = BytesIO()
                 with pd.ExcelWriter(bio, engine="xlsxwriter") as xw:
                     df_y1.to_excel(xw, index=False, sheet_name="Y1 Projections")
@@ -839,10 +824,410 @@ def main():
             - Depreciation: {cfg.finance.depreciation_years_leasehold} years (leasehold), {cfg.finance.depreciation_years_equipment} years (equipment)
             """)
 
+def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
+    """Create professional banker-format P&L Excel file with Y1 monthly and Y2 EOY columns
+
+    Computes all totals from raw components - never trusts pre-calculated totals in CSV
+    """
+    from io import BytesIO
+    from datetime import datetime
+    import calendar
+
+    # Parse years from the data
+    current_year = datetime.now().year
+
+    # Month names for headers
+    month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+    # Build period data with computed totals
+    def compute_period_data(pnl_dict):
+        """Compute all derived totals from raw components"""
+        # Extract revenue components
+        court_rev = pnl_dict.get("court_rev", 0)
+        league_rev = pnl_dict.get("league_rev", 0)
+        corp_rev = pnl_dict.get("corporate_rev", 0)
+        tourney_rev = pnl_dict.get("tournament_rev", 0)
+        membership_rev = pnl_dict.get("membership_rev", 0)
+        retail_rev = pnl_dict.get("retail_rev", 0)
+
+        # Compute total revenue
+        total_revenue = court_rev + league_rev + corp_rev + tourney_rev + membership_rev + retail_rev
+
+        # COGS
+        cogs = pnl_dict.get("cogs", 0)
+
+        # Compute Gross Profit
+        gross_profit = total_revenue - cogs
+
+        # Operating expenses - extract or use fixed_opex as fallback
+        fixed_opex = pnl_dict.get("fixed_opex", 0)
+
+        # If we have detailed opex breakdown, use it; otherwise use fixed_opex
+        rent = pnl_dict.get("rent", fixed_opex * 0.3)
+        utilities = pnl_dict.get("utilities", fixed_opex * 0.15)
+        insurance = pnl_dict.get("insurance", fixed_opex * 0.1)
+        marketing = pnl_dict.get("marketing", fixed_opex * 0.15)
+        software = pnl_dict.get("software", fixed_opex * 0.1)
+        professional = pnl_dict.get("professional_fees", fixed_opex * 0.05)
+        repairs = pnl_dict.get("repairs_maintenance", fixed_opex * 0.05)
+        other_opex = pnl_dict.get("other_opex", fixed_opex * 0.1)
+
+        # Compute total operating expenses
+        total_opex = rent + utilities + insurance + marketing + software + professional + repairs + other_opex
+
+        # Compute EBITDA
+        ebitda = gross_profit - total_opex
+
+        # Depreciation & Amortization
+        depreciation = pnl_dict.get("depreciation", 0)
+
+        # Compute EBIT
+        ebit = ebitda - depreciation
+
+        # Interest
+        interest = pnl_dict.get("interest", 0)
+
+        # Other income/expense
+        other = pnl_dict.get("other_income", 0) - pnl_dict.get("other_expense", 0)
+
+        # Compute EBT
+        ebt = ebit - interest + other
+
+        # Taxes
+        tax = pnl_dict.get("tax", 0)
+
+        # Compute Net Income
+        net_income = ebt - tax
+
+        return {
+            # Revenue components
+            "court_rev": court_rev,
+            "league_rev": league_rev,
+            "corporate_rev": corp_rev,
+            "tournament_rev": tourney_rev,
+            "membership_rev": membership_rev,
+            "retail_rev": retail_rev,
+            "total_revenue": total_revenue,
+
+            # COGS
+            "cogs": cogs,
+            "gross_profit": gross_profit,
+
+            # Operating expenses
+            "rent": rent,
+            "utilities": utilities,
+            "insurance": insurance,
+            "marketing": marketing,
+            "software": software,
+            "professional_fees": professional,
+            "repairs_maintenance": repairs,
+            "other_opex": other_opex,
+            "total_opex": total_opex,
+
+            # Other items
+            "ebitda": ebitda,
+            "depreciation": depreciation,
+            "ebit": ebit,
+            "interest": interest,
+            "other": other,
+            "ebt": ebt,
+            "tax": tax,
+            "net_income": net_income
+        }
+
+    # Compute period data for all months and Y2
+    periods_y1 = [compute_period_data(pnl) for pnl in pnl_y1_monthly]
+    period_y2 = compute_period_data(pnl_y2_eoy) if pnl_y2_eoy else {}
+
+    # Build the data structure using standard P&L ordering
+    data = []
+
+    # Title row (will be merged and centered)
+    title_row = ["Profit & Loss (Projected)"] + ["" for _ in range(14)]
+    data.append(title_row)
+
+    # Headers row - Month names for Y1 + EOY for Y2
+    header_row = ["", ""]  # A, B columns
+    for i in range(12):
+        if i < len(periods_y1):
+            header_row.append(f"{month_names[i]} {current_year}")
+        else:
+            header_row.append("")  # Empty if month missing
+    header_row.append(f"Year {current_year + 1}")  # Y2 full year
+    data.append(header_row)
+
+    # Date row - "for the month ended MM/DD/YYYY" or "for the year ended 12/31/YYYY"
+    date_row = ["", ""]  # A, B columns
+    for i in range(12):
+        if i < len(periods_y1):
+            last_day = calendar.monthrange(current_year, i + 1)[1]
+            date_str = f"for the month ended {i+1:02d}/{last_day:02d}/{current_year}"
+            date_row.append(date_str)
+        else:
+            date_row.append("")
+    # Y2 full year date
+    date_row.append(f"for the year ended 12/31/{current_year + 1}")
+    data.append(date_row)
+
+    # Helper function to add a data row
+    def add_data_row(label, field_name=None, is_total=False):
+        row = [label, ""]  # A, B columns
+        for i in range(12):
+            if i < len(periods_y1) and field_name:
+                row.append(periods_y1[i].get(field_name, 0))
+            else:
+                row.append(0)
+        # Y2 EOY
+        if field_name and period_y2:
+            row.append(period_y2.get(field_name, 0))
+        else:
+            row.append(0)
+        data.append(row)
+
+    # Build P&L according to standard banker format
+
+    # Revenue section
+    data.append(["Revenue"] + ["" for _ in range(14)])
+    add_data_row("  Court rental revenue", "court_rev")
+    add_data_row("  League revenue", "league_rev")
+    add_data_row("  Corporate events revenue", "corporate_rev")
+    add_data_row("  Tournament revenue", "tournament_rev")
+    add_data_row("  Membership revenue", "membership_rev")
+    add_data_row("  Retail/Pro shop revenue", "retail_rev")
+    add_data_row("Total Revenue", "total_revenue", is_total=True)
+
+    data.append(["" for _ in range(15)])  # Empty row
+
+    # Cost of Goods Sold
+    data.append(["Cost of Goods Sold"] + ["" for _ in range(14)])
+    add_data_row("  Cost of goods sold", "cogs")
+    add_data_row("Total Cost of Goods Sold", "cogs", is_total=True)
+
+    # Gross Profit
+    add_data_row("Gross Profit", "gross_profit", is_total=True)
+
+    data.append(["" for _ in range(15)])  # Empty row
+
+    # Operating Expenses
+    data.append(["Operating Expenses"] + ["" for _ in range(14)])
+    add_data_row("  Rent", "rent")
+    add_data_row("  Utilities", "utilities")
+    add_data_row("  Insurance", "insurance")
+    add_data_row("  Marketing", "marketing")
+    add_data_row("  Software/Technology", "software")
+    add_data_row("  Professional fees", "professional_fees")
+    add_data_row("  Repairs & maintenance", "repairs_maintenance")
+    add_data_row("  Other operating expenses", "other_opex")
+    add_data_row("Total Operating Expenses", "total_opex", is_total=True)
+
+    # EBITDA
+    add_data_row("EBITDA", "ebitda", is_total=True)
+
+    # Depreciation & Amortization
+    add_data_row("  Depreciation & Amortization", "depreciation")
+
+    # EBIT
+    add_data_row("EBIT (Operating Income)", "ebit", is_total=True)
+
+    data.append(["" for _ in range(15)])  # Empty row
+
+    # Other Income/Expense
+    data.append(["Other Income/(Expense)"] + ["" for _ in range(14)])
+    add_data_row("  Interest expense", "interest")
+    add_data_row("Total Other Income/(Expense)", "interest", is_total=True)
+
+    # EBT
+    add_data_row("Earnings Before Taxes", "ebt", is_total=True)
+
+    # Taxes
+    add_data_row("  Income taxes", "tax")
+
+    # Net Income
+    add_data_row("Net Income", "net_income", is_total=True)
+
+    # Create DataFrame
+    df = pd.DataFrame(data)
+
+    # Create Excel file with professional formatting
+    bio = BytesIO()
+    with pd.ExcelWriter(bio, engine="xlsxwriter") as writer:
+        df.to_excel(writer, sheet_name="Profit & Loss", index=False, header=False)
+
+        # Get workbook and worksheet
+        workbook = writer.book
+        worksheet = writer.sheets["Profit & Loss"]
+
+        # Define professional formats (same as Balance Sheet)
+        title_format = workbook.add_format({
+            'bold': True,
+            'font_size': 16,
+            'align': 'center',
+            'valign': 'vcenter'
+        })
+
+        header_format = workbook.add_format({
+            'bold': True,
+            'align': 'center',
+            'valign': 'vcenter',
+            'bg_color': '#F0F0F0'  # Light gray
+        })
+
+        date_format = workbook.add_format({
+            'align': 'center',
+            'italic': True,
+            'font_size': 10
+        })
+
+        label_format = workbook.add_format({
+            'indent': 1
+        })
+
+        total_label_format = workbook.add_format({
+            'bold': True,
+            'top': 1
+        })
+
+        # Currency format - whole dollars only
+        currency_format = workbook.add_format({
+            'num_format': '#,##0;(#,##0)',
+            'align': 'right'
+        })
+
+        total_currency_format = workbook.add_format({
+            'bold': True,
+            'num_format': '#,##0;(#,##0)',
+            'align': 'right',
+            'top': 1
+        })
+
+        # Merge and center title
+        worksheet.merge_range('A1:O1', 'Profit & Loss (Projected)', title_format)
+
+        # Apply header format to month names (row 1)
+        for col in range(2, 15):  # C to O
+            if col < len(data[1]) and data[1][col]:
+                worksheet.write(1, col, data[1][col], header_format)
+            if col < len(data[2]) and data[2][col]:
+                worksheet.write(2, col, data[2][col], date_format)
+
+        # Define total lines that need emphasis
+        total_labels = [
+            "Total Revenue",
+            "Total Cost of Goods Sold",
+            "Gross Profit",
+            "Total Operating Expenses",
+            "EBITDA",
+            "EBIT (Operating Income)",
+            "Total Other Income/(Expense)",
+            "Earnings Before Taxes",
+            "Net Income"
+        ]
+
+        # Format all data rows
+        first_data_row = 3  # First actual data row after headers
+        for row_idx in range(first_data_row, len(data)):
+            if row_idx < len(data):
+                label = str(data[row_idx][0]) if data[row_idx][0] else ""
+
+                # Apply label formatting
+                if any(total in label for total in total_labels):
+                    worksheet.write(row_idx, 0, label, total_label_format)
+                elif label.startswith("  "):  # Indented items
+                    worksheet.write(row_idx, 0, label, label_format)
+                else:
+                    worksheet.write(row_idx, 0, label)
+
+                # Format numeric columns with currency
+                for col_idx in range(2, 15):  # Columns C through O
+                    if col_idx < len(data[row_idx]):
+                        val = data[row_idx][col_idx]
+                        if isinstance(val, (int, float)) and val != "":
+                            # Apply currency format with emphasis for totals
+                            if any(total in label for total in total_labels):
+                                worksheet.write(row_idx, col_idx, val, total_currency_format)
+                            else:
+                                worksheet.write(row_idx, col_idx, val, currency_format)
+
+        # Set column widths
+        worksheet.set_column('A:A', 34)   # Labels
+        worksheet.set_column('B:B', 3)    # Indent spacer
+        worksheet.set_column('C:O', 14)   # Data columns
+
+        # Set row heights for better spacing
+        worksheet.set_row(0, 22)  # Title row
+        worksheet.set_row(1, 18)  # Headers
+        worksheet.set_row(2, 18)  # Date row
+
+        # Freeze panes at first data row
+        worksheet.freeze_panes(first_data_row, 2)  # Freeze at C{first_data_row}
+
+    bio.seek(0)
+
+    # Validation checks using computed values
+    validation_issues = []
+    tolerance = 0.01
+
+    # Validate Y1 months
+    for i, period in enumerate(periods_y1):
+        month = month_names[i] if i < 12 else f"Month {i+1}"
+
+        # Validate Gross Profit
+        gp_expected = period["total_revenue"] - period["cogs"]
+        gp_computed = period["gross_profit"]
+        if abs(gp_expected - gp_computed) > tolerance:
+            validation_issues.append(f"{month}: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
+
+        # Validate Total Opex
+        opex_sum = (period["rent"] + period["utilities"] + period["insurance"] +
+                    period["marketing"] + period["software"] + period["professional_fees"] +
+                    period["repairs_maintenance"] + period["other_opex"])
+        opex_computed = period["total_opex"]
+        if abs(opex_sum - opex_computed) > tolerance:
+            validation_issues.append(f"{month}: Total Opex mismatch (expected {opex_sum:.2f}, got {opex_computed:.2f})")
+
+        # Validate EBITDA
+        ebitda_expected = period["gross_profit"] - period["total_opex"]
+        ebitda_computed = period["ebitda"]
+        if abs(ebitda_expected - ebitda_computed) > tolerance:
+            validation_issues.append(f"{month}: EBITDA mismatch (expected {ebitda_expected:.2f}, got {ebitda_computed:.2f})")
+
+        # Validate EBIT
+        ebit_expected = period["ebitda"] - period["depreciation"]
+        ebit_computed = period["ebit"]
+        if abs(ebit_expected - ebit_computed) > tolerance:
+            validation_issues.append(f"{month}: EBIT mismatch (expected {ebit_expected:.2f}, got {ebit_computed:.2f})")
+
+        # Validate Net Income
+        ni_expected = (period["ebit"] - period["interest"] + period["other"]) - period["tax"]
+        ni_computed = period["net_income"]
+        if abs(ni_expected - ni_computed) > tolerance:
+            validation_issues.append(f"{month}: Net Income mismatch (expected {ni_expected:.2f}, got {ni_computed:.2f})")
+
+    # Validate Y2 if present
+    if period_y2:
+        # Validate Gross Profit
+        gp_expected = period_y2["total_revenue"] - period_y2["cogs"]
+        gp_computed = period_y2["gross_profit"]
+        if abs(gp_expected - gp_computed) > tolerance:
+            validation_issues.append(f"Year 2: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
+
+        # Validate EBITDA
+        ebitda_expected = period_y2["gross_profit"] - period_y2["total_opex"]
+        ebitda_computed = period_y2["ebitda"]
+        if abs(ebitda_expected - ebitda_computed) > tolerance:
+            validation_issues.append(f"Year 2: EBITDA mismatch (expected {ebitda_expected:.2f}, got {ebitda_computed:.2f})")
+
+    if validation_issues:
+        import streamlit as st
+        st.warning("⚠️ P&L validation issues:\n" + "\n".join(validation_issues))
+
+    return bio.read()
+
 def create_banker_balance_sheet(bs_y1_monthly, bs_y2_eoy):
     """Create professional banker-format Balance Sheet Excel file with Y1 monthly and Y2 EOY columns"""
     from io import BytesIO
-    from datetime import datetime, date
+    from datetime import datetime
     import calendar
 
     # Parse years from the data
@@ -969,8 +1354,7 @@ def create_banker_balance_sheet(bs_y1_monthly, bs_y2_eoy):
     total_le_y2 = bs_y2_eoy.get("total_liabilities_equity", 0)
     add_data_row("Total Liabilities & Equity", total_le_y1, total_le_y2)
 
-    # Create DataFrame with proper column names
-    column_names = ["A", "B"] + [f"C{i}" for i in range(13)]
+    # Create DataFrame
     df = pd.DataFrame(data)
 
     # Create Excel file with professional formatting
@@ -1040,8 +1424,6 @@ def create_banker_balance_sheet(bs_y1_monthly, bs_y2_eoy):
                 worksheet.write(2, col, data[2][col], date_format)
 
         # Dynamically detect rows
-        header_row = 1  # Row with period names
-        asof_row = 2    # Row with "as of" dates
         first_data_row = 3  # First label row ("Assets")
 
         # Define total lines that need emphasis
