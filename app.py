@@ -1104,6 +1104,7 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
             "tournament_rev": tourney_rev,
             "membership_rev": membership_rev,
             "retail_rev": retail_rev,
+            "revenue_other": revenue_other,
             "total_revenue": total_revenue,
 
             # COGS
@@ -1178,7 +1179,7 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         if label == "":  # Empty rows
             row.extend(["" for _ in range(13)])
 
-        # Revenue categories - map our revenue types to Category 1-6
+        # Revenue categories - map our revenue types to Category 1-7
         elif label == "Category 1":  # Court rental
             for i in range(12):
                 row.append(periods_y1[i].get("court_rev", 0) if i < len(periods_y1) else 0)
@@ -1203,14 +1204,38 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
             for i in range(12):
                 row.append(periods_y1[i].get("retail_rev", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("retail_rev", 0) if period_y2 else 0)
-        elif label == "Category 7":  # Unused
-            row.extend([0 for _ in range(13)])
+        elif label == "Category 7":  # Other revenue (catch-all)
+            for i in range(12):
+                row.append(periods_y1[i].get("revenue_other", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("revenue_other", 0) if period_y2 else 0)
 
-        # Total Revenue
+        # Total Revenue - MUST be the sum of Category 1-7 detail lines
         elif label == "Total Revenue (Sales)":
             for i in range(12):
-                row.append(periods_y1[i].get("total_revenue", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("total_revenue", 0) if period_y2 else 0)
+                if i < len(periods_y1):
+                    # Sum ONLY what we write to Categories 1-7
+                    total = (periods_y1[i].get("court_rev", 0) +
+                            periods_y1[i].get("league_rev", 0) +
+                            periods_y1[i].get("corporate_rev", 0) +
+                            periods_y1[i].get("tournament_rev", 0) +
+                            periods_y1[i].get("membership_rev", 0) +
+                            periods_y1[i].get("retail_rev", 0) +
+                            periods_y1[i].get("revenue_other", 0))
+                    row.append(total)
+                else:
+                    row.append(0)
+            # Y2 total
+            if period_y2:
+                total_y2 = (period_y2.get("court_rev", 0) +
+                           period_y2.get("league_rev", 0) +
+                           period_y2.get("corporate_rev", 0) +
+                           period_y2.get("tournament_rev", 0) +
+                           period_y2.get("membership_rev", 0) +
+                           period_y2.get("retail_rev", 0) +
+                           period_y2.get("revenue_other", 0))
+                row.append(total_y2)
+            else:
+                row.append(0)
 
         # Cost of Sales
         elif label == "Cost of Sales":
@@ -1492,10 +1517,11 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     for i, period in enumerate(periods_y1):
         month = month_names[i] if i < 12 else f"Month {i+1}"
 
-        # Validate Total Revenue (Sales) = sum of revenue categories
+        # Validate Total Revenue (Sales) = sum of revenue categories (including Category 7/other)
         revenue_sum = (period.get("court_rev", 0) + period.get("league_rev", 0) +
                       period.get("corporate_rev", 0) + period.get("tournament_rev", 0) +
-                      period.get("membership_rev", 0) + period.get("retail_rev", 0))
+                      period.get("membership_rev", 0) + period.get("retail_rev", 0) +
+                      period.get("revenue_other", 0))  # Must include Category 7
         revenue_computed = period.get("total_revenue", 0)
         if abs(revenue_sum - revenue_computed) > tolerance:
             validation_issues.append(f"{month}: Total Revenue mismatch (expected {revenue_sum:.2f}, got {revenue_computed:.2f})")
@@ -1535,6 +1561,15 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
 
     # Validate Y2 if present (using same banker terminology)
     if period_y2:
+        # Validate Total Revenue (Sales) = sum of revenue categories (including Category 7/other)
+        revenue_sum_y2 = (period_y2.get("court_rev", 0) + period_y2.get("league_rev", 0) +
+                         period_y2.get("corporate_rev", 0) + period_y2.get("tournament_rev", 0) +
+                         period_y2.get("membership_rev", 0) + period_y2.get("retail_rev", 0) +
+                         period_y2.get("revenue_other", 0))
+        revenue_computed_y2 = period_y2.get("total_revenue", 0)
+        if abs(revenue_sum_y2 - revenue_computed_y2) > tolerance:
+            validation_issues.append(f"Year 2: Total Revenue mismatch (expected {revenue_sum_y2:.2f}, got {revenue_computed_y2:.2f})")
+
         # Validate Gross Profit
         gp_expected = period_y2["total_revenue"] - period_y2["cogs"]
         gp_computed = period_y2["gross_profit"]
