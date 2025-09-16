@@ -1024,14 +1024,19 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         # Compute EBIT
         ebit = ebitda - depreciation
 
-        # Interest
-        interest = mapped_accounts['interest']
+        # Interest expense (positive magnitude for display)
+        interest_expense = mapped_accounts['interest']
 
-        # Other income/expense (net)
-        other = mapped_accounts['other_income'] - mapped_accounts['other_expense']
+        # Other non-interest income/expense
+        other_income = mapped_accounts['other_income']
+        other_expense = mapped_accounts['other_expense']
 
-        # Compute EBT
-        ebt = ebit - interest + other
+        # Total Other Income/(Expense) - signed net value
+        # This is negative when expenses (including interest) exceed income
+        total_other_net = other_income - other_expense - interest_expense
+
+        # Compute EBT using the signed net
+        ebt = ebit + total_other_net
 
         # Taxes
         tax = mapped_accounts['tax']
@@ -1069,8 +1074,8 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
             "ebitda": ebitda,
             "depreciation": depreciation,
             "ebit": ebit,
-            "interest": interest,
-            "other": other,
+            "interest_expense": interest_expense,  # Positive magnitude for display
+            "total_other_net": total_other_net,    # Signed net (typically negative)
             "ebt": ebt,
             "tax": tax,
             "net_income": net_income,
@@ -1195,8 +1200,8 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
 
     # Other Income/Expense
     data.append(["Other Income/(Expense)"] + ["" for _ in range(14)])
-    add_data_row("  Interest expense", "interest")
-    add_data_row("Total Other Income/(Expense)", "interest", is_total=True)
+    add_data_row("  Interest expense", "interest_expense")  # Display as positive
+    add_data_row("Total Other Income/(Expense)", "total_other_net", is_total=True)  # Signed net
 
     # EBT
     add_data_row("Earnings Before Taxes", "ebt", is_total=True)
@@ -1360,8 +1365,14 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         if abs(ebit_expected - ebit_computed) > tolerance:
             validation_issues.append(f"{month}: EBIT mismatch (expected {ebit_expected:.2f}, got {ebit_computed:.2f})")
 
+        # Validate EBT
+        ebt_expected = period["ebit"] + period["total_other_net"]
+        ebt_computed = period["ebt"]
+        if abs(ebt_expected - ebt_computed) > tolerance:
+            validation_issues.append(f"{month}: EBT mismatch (expected {ebt_expected:.2f}, got {ebt_computed:.2f})")
+
         # Validate Net Income
-        ni_expected = (period["ebit"] - period["interest"] + period["other"]) - period["tax"]
+        ni_expected = period["ebt"] - period["tax"]
         ni_computed = period["net_income"]
         if abs(ni_expected - ni_computed) > tolerance:
             validation_issues.append(f"{month}: Net Income mismatch (expected {ni_expected:.2f}, got {ni_computed:.2f})")
@@ -1379,6 +1390,18 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         ebitda_computed = period_y2["ebitda"]
         if abs(ebitda_expected - ebitda_computed) > tolerance:
             validation_issues.append(f"Year 2: EBITDA mismatch (expected {ebitda_expected:.2f}, got {ebitda_computed:.2f})")
+
+        # Validate EBT
+        ebt_expected = period_y2["ebit"] + period_y2["total_other_net"]
+        ebt_computed = period_y2["ebt"]
+        if abs(ebt_expected - ebt_computed) > tolerance:
+            validation_issues.append(f"Year 2: EBT mismatch (expected {ebt_expected:.2f}, got {ebt_computed:.2f})")
+
+        # Validate Net Income
+        ni_expected = period_y2["ebt"] - period_y2["tax"]
+        ni_computed = period_y2["net_income"]
+        if abs(ni_expected - ni_computed) > tolerance:
+            validation_issues.append(f"Year 2: Net Income mismatch (expected {ni_expected:.2f}, got {ni_computed:.2f})")
 
     if validation_issues:
         import streamlit as st
