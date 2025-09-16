@@ -1141,30 +1141,6 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     periods_y1 = [compute_period_data(pnl, mapping_dict) for pnl in pnl_y1_monthly]
     period_y2 = compute_period_data(pnl_y2_eoy, mapping_dict) if pnl_y2_eoy else {}
 
-    # Debug output for first month (remove after validation passes)
-    if periods_y1:
-        jan = periods_y1[0]
-        ebitda_jan = jan.get("gross_profit", 0) - jan.get("total_opex", 0)
-        depreciation_jan = jan.get("depreciation", 0)
-        op_profit_jan = ebitda_jan - depreciation_jan  # EBIT
-        debug = {
-            "ebitda": ebitda_jan,
-            "depreciation": depreciation_jan,
-            "operating_profit_ebit": op_profit_jan,
-            "interest_expense": jan.get("interest_expense", 0),
-            "total_other_net": jan.get("total_other_net", 0),
-            "npbt_written": op_profit_jan + jan.get("total_other_net", 0),
-            "ebt_computed": jan.get("ebt", 0),
-            "tax": jan.get("tax", 0),
-            "net_income": jan.get("net_income", 0),
-            "noi_written": (op_profit_jan + jan.get("total_other_net", 0)) - jan.get("tax", 0)
-        }
-        try:
-            import streamlit as st
-            st.write({"P&L debug (Jan)": debug})
-        except:
-            pass  # Not in Streamlit context
-
     # Build the data structure using exact banker template labels
     data = []
 
@@ -1549,92 +1525,78 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     validation_issues = []
     tolerance = 0.01
 
-    # Validate Y1 months using banker template terminology
+    # Validate Y1 months using banker template definitions
     for i, period in enumerate(periods_y1):
         month = month_names[i] if i < 12 else f"Month {i+1}"
 
-        # Validate Total Revenue (Sales) = sum of revenue categories (including Category 7/other)
-        revenue_sum = (period.get("court_rev", 0) + period.get("league_rev", 0) +
-                      period.get("corporate_rev", 0) + period.get("tournament_rev", 0) +
-                      period.get("membership_rev", 0) + period.get("retail_rev", 0) +
-                      period.get("revenue_other", 0))  # Must include Category 7
-        revenue_computed = period.get("total_revenue", 0)
-        if abs(revenue_sum - revenue_computed) > tolerance:
-            validation_issues.append(f"{month}: Total Revenue mismatch (expected {revenue_sum:.2f}, got {revenue_computed:.2f})")
+        # 1. Total Revenue = sum(Category 1..Category 7)
+        cat1 = period.get("court_rev", 0)
+        cat2 = period.get("league_rev", 0)
+        cat3 = period.get("corporate_rev", 0)
+        cat4 = period.get("tournament_rev", 0)
+        cat5 = period.get("membership_rev", 0)
+        cat6 = period.get("retail_rev", 0)
+        cat7 = period.get("revenue_other", 0)
+        total_revenue_written = cat1 + cat2 + cat3 + cat4 + cat5 + cat6 + cat7
+        total_revenue_computed = period.get("total_revenue", 0)
+        if abs(total_revenue_written - total_revenue_computed) > tolerance:
+            validation_issues.append(f"{month}: Total Revenue mismatch (written {total_revenue_written:.2f}, computed {total_revenue_computed:.2f})")
 
-        # Validate Gross Profit = Total Revenue - Cost of Sales
-        gp_expected = period["total_revenue"] - period["cogs"]
-        gp_computed = period["gross_profit"]
-        if abs(gp_expected - gp_computed) > tolerance:
-            validation_issues.append(f"{month}: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
-
-        # Validate Total Operating Expenses = sum of all opex components
-        opex_sum = (period.get("payroll", 0) + period.get("rent", 0) + period.get("utilities", 0) +
-                    period.get("insurance", 0) + period.get("marketing", 0) + period.get("software", 0) +
-                    period.get("professional_fees", 0) + period.get("repairs_maintenance", 0) +
-                    period.get("other_opex", 0))
-        opex_computed = period["total_opex"]
-        if abs(opex_sum - opex_computed) > tolerance:
-            validation_issues.append(f"{month}: Total Operating Expenses mismatch (expected {opex_sum:.2f}, got {opex_computed:.2f})")
-
-        # Validate Operating Profit = Gross Profit - Total Operating Expenses - Depreciation (EBIT)
-        ebitda = period["gross_profit"] - period["total_opex"]
+        # 2. Operating Profit = (Total Revenue - Cost of Sales) - Total Operating Expenses - Depreciation
+        # Note: Operating Profit is EBIT in banker terms
+        gross_profit = total_revenue_computed - period.get("cogs", 0)
+        total_opex = period.get("total_opex", 0)
         depreciation = period.get("depreciation", 0)
-        op_profit_expected = ebitda - depreciation  # EBIT
-        op_profit_computed = period.get("ebit", ebitda - depreciation)  # Use EBIT if available
-        if abs(op_profit_expected - op_profit_computed) > tolerance:
-            validation_issues.append(f"{month}: Operating Profit mismatch (expected {op_profit_expected:.2f}, got {op_profit_computed:.2f})")
+        operating_profit_written = gross_profit - total_opex - depreciation  # This is EBIT
 
-        # Validate Net Profit Before Taxes = Operating Profit (EBIT) + Total Other Income/(Expense)
-        # What we write to the sheet
-        npbt_written = op_profit_expected + period["total_other_net"]
-        # What the raw data says (should match)
-        npbt_computed = period["ebt"]
+        # 3. Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
+        total_other_net = period.get("total_other_net", 0)  # Already signed (negative when expenses > income)
+        npbt_written = operating_profit_written + total_other_net
+        npbt_computed = period.get("ebt", 0)
         if abs(npbt_written - npbt_computed) > tolerance:
             validation_issues.append(f"{month}: Net Profit Before Taxes mismatch (written {npbt_written:.2f}, computed {npbt_computed:.2f})")
 
-        # Validate Net Operating Income = Net Profit Before Taxes - Taxes
-        noi_expected = npbt_computed - period["tax"]
-        noi_computed = period["net_income"]
-        if abs(noi_expected - noi_computed) > tolerance:
-            validation_issues.append(f"{month}: Net Operating Income mismatch (expected {noi_expected:.2f}, got {noi_computed:.2f})")
+        # 4. Net Operating Income = Net Profit Before Taxes - (Federal + State + Local)
+        tax_total = period.get("tax", 0)
+        noi_written = npbt_written - tax_total
+        noi_computed = period.get("net_income", 0)
+        if abs(noi_written - noi_computed) > tolerance:
+            validation_issues.append(f"{month}: Net Operating Income mismatch (written {noi_written:.2f}, computed {noi_computed:.2f})")
 
-    # Validate Y2 if present (using same banker terminology)
+    # Validate Y2 if present (using same banker definitions)
     if period_y2:
-        # Validate Total Revenue (Sales) = sum of revenue categories (including Category 7/other)
-        revenue_sum_y2 = (period_y2.get("court_rev", 0) + period_y2.get("league_rev", 0) +
-                         period_y2.get("corporate_rev", 0) + period_y2.get("tournament_rev", 0) +
-                         period_y2.get("membership_rev", 0) + period_y2.get("retail_rev", 0) +
-                         period_y2.get("revenue_other", 0))
-        revenue_computed_y2 = period_y2.get("total_revenue", 0)
-        if abs(revenue_sum_y2 - revenue_computed_y2) > tolerance:
-            validation_issues.append(f"Year 2: Total Revenue mismatch (expected {revenue_sum_y2:.2f}, got {revenue_computed_y2:.2f})")
+        # 1. Total Revenue = sum(Category 1..Category 7)
+        cat1_y2 = period_y2.get("court_rev", 0)
+        cat2_y2 = period_y2.get("league_rev", 0)
+        cat3_y2 = period_y2.get("corporate_rev", 0)
+        cat4_y2 = period_y2.get("tournament_rev", 0)
+        cat5_y2 = period_y2.get("membership_rev", 0)
+        cat6_y2 = period_y2.get("retail_rev", 0)
+        cat7_y2 = period_y2.get("revenue_other", 0)
+        total_revenue_written_y2 = cat1_y2 + cat2_y2 + cat3_y2 + cat4_y2 + cat5_y2 + cat6_y2 + cat7_y2
+        total_revenue_computed_y2 = period_y2.get("total_revenue", 0)
+        if abs(total_revenue_written_y2 - total_revenue_computed_y2) > tolerance:
+            validation_issues.append(f"Year 2: Total Revenue mismatch (written {total_revenue_written_y2:.2f}, computed {total_revenue_computed_y2:.2f})")
 
-        # Validate Gross Profit
-        gp_expected = period_y2["total_revenue"] - period_y2["cogs"]
-        gp_computed = period_y2["gross_profit"]
-        if abs(gp_expected - gp_computed) > tolerance:
-            validation_issues.append(f"Year 2: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
-
-        # Validate Operating Profit (EBIT)
-        ebitda_y2 = period_y2["gross_profit"] - period_y2["total_opex"]
+        # 2. Operating Profit = (Total Revenue - Cost of Sales) - Total Operating Expenses - Depreciation
+        gross_profit_y2 = total_revenue_computed_y2 - period_y2.get("cogs", 0)
+        total_opex_y2 = period_y2.get("total_opex", 0)
         depreciation_y2 = period_y2.get("depreciation", 0)
-        op_profit_expected = ebitda_y2 - depreciation_y2  # EBIT
-        op_profit_computed = period_y2.get("ebit", ebitda_y2 - depreciation_y2)
-        if abs(op_profit_expected - op_profit_computed) > tolerance:
-            validation_issues.append(f"Year 2: Operating Profit mismatch (expected {op_profit_expected:.2f}, got {op_profit_computed:.2f})")
+        operating_profit_written_y2 = gross_profit_y2 - total_opex_y2 - depreciation_y2  # This is EBIT
 
-        # Validate Net Profit Before Taxes
-        npbt_written = op_profit_expected + period_y2["total_other_net"]
-        npbt_computed = period_y2["ebt"]
-        if abs(npbt_written - npbt_computed) > tolerance:
-            validation_issues.append(f"Year 2: Net Profit Before Taxes mismatch (written {npbt_written:.2f}, computed {npbt_computed:.2f})")
+        # 3. Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
+        total_other_net_y2 = period_y2.get("total_other_net", 0)
+        npbt_written_y2 = operating_profit_written_y2 + total_other_net_y2
+        npbt_computed_y2 = period_y2.get("ebt", 0)
+        if abs(npbt_written_y2 - npbt_computed_y2) > tolerance:
+            validation_issues.append(f"Year 2: Net Profit Before Taxes mismatch (written {npbt_written_y2:.2f}, computed {npbt_computed_y2:.2f})")
 
-        # Validate Net Operating Income
-        noi_expected = period_y2["ebt"] - period_y2["tax"]
-        noi_computed = period_y2["net_income"]
-        if abs(noi_expected - noi_computed) > tolerance:
-            validation_issues.append(f"Year 2: Net Operating Income mismatch (expected {noi_expected:.2f}, got {noi_computed:.2f})")
+        # 4. Net Operating Income = Net Profit Before Taxes - Taxes
+        tax_total_y2 = period_y2.get("tax", 0)
+        noi_written_y2 = npbt_written_y2 - tax_total_y2
+        noi_computed_y2 = period_y2.get("net_income", 0)
+        if abs(noi_written_y2 - noi_computed_y2) > tolerance:
+            validation_issues.append(f"Year 2: Net Operating Income mismatch (written {noi_written_y2:.2f}, computed {noi_computed_y2:.2f})")
 
     if validation_issues:
         import streamlit as st
