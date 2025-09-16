@@ -824,14 +824,20 @@ def main():
             - Depreciation: {cfg.finance.depreciation_years_leasehold} years (leasehold), {cfg.finance.depreciation_years_equipment} years (equipment)
             """)
 
-def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
+def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     """Create professional banker-format P&L Excel file with Y1 monthly and Y2 EOY columns
 
     Computes all totals from raw components - never trusts pre-calculated totals in CSV
+
+    Args:
+        pnl_y1_monthly: List of dicts with Y1 monthly P&L data
+        pnl_y2_eoy: Dict with Y2 end-of-year P&L totals
+        mapping_dict: Optional dict mapping CSV account names to standard categories
     """
     from io import BytesIO
     from datetime import datetime
     import calendar
+    import re
 
     # Parse years from the data
     current_year = datetime.now().year
@@ -840,62 +846,195 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-    # Build period data with computed totals
-    def compute_period_data(pnl_dict):
-        """Compute all derived totals from raw components"""
-        # Extract revenue components
-        court_rev = pnl_dict.get("court_rev", 0)
-        league_rev = pnl_dict.get("league_rev", 0)
-        corp_rev = pnl_dict.get("corporate_rev", 0)
-        tourney_rev = pnl_dict.get("tournament_rev", 0)
-        membership_rev = pnl_dict.get("membership_rev", 0)
-        retail_rev = pnl_dict.get("retail_rev", 0)
+    def normalize_account_name(name):
+        """Normalize account name for matching: lowercase, no punctuation, single spaces"""
+        if not name:
+            return ""
+        # Convert to lowercase
+        normalized = str(name).lower()
+        # Remove common punctuation
+        normalized = re.sub(r'[&/\(\)\-,\.]', ' ', normalized)
+        # Collapse multiple spaces to single space
+        normalized = re.sub(r'\s+', ' ', normalized).strip()
+        return normalized
+
+    def map_account_to_category(account_name, mapping_dict=None):
+        """Map account name to standard category using explicit mapping or heuristics"""
+        normalized = normalize_account_name(account_name)
+
+        # First check explicit mapping if provided
+        if mapping_dict and account_name in mapping_dict:
+            return mapping_dict[account_name]
+
+        # Revenue heuristics
+        if any(term in normalized for term in ['court', 'rental', 'booking']):
+            return 'court_rev'
+        if any(term in normalized for term in ['league', 'team']):
+            return 'league_rev'
+        if any(term in normalized for term in ['corporate', 'corp', 'event']):
+            return 'corporate_rev'
+        if any(term in normalized for term in ['tournament', 'tourney', 'competition']):
+            return 'tournament_rev'
+        if any(term in normalized for term in ['membership', 'member', 'subscription']):
+            return 'membership_rev'
+        if any(term in normalized for term in ['retail', 'shop', 'merchandise', 'pro shop']):
+            return 'retail_rev'
+        if any(term in normalized for term in ['revenue', 'sales', 'income']) and 'other' not in normalized:
+            return 'revenue_other'
+
+        # COGS heuristics
+        if any(term in normalized for term in ['cogs', 'cost of goods', 'cost of sales', 'inventory cost']):
+            return 'cogs'
+        if 'merchant fee' in normalized or 'processing fee' in normalized:
+            return 'cogs'
+        if 'direct labor' in normalized or 'direct cost' in normalized:
+            return 'cogs'
+
+        # Operating expense heuristics
+        if any(term in normalized for term in ['rent', 'lease', 'occupancy']):
+            return 'rent'
+        if any(term in normalized for term in ['payroll', 'wage', 'salary', 'staff', 'employee']):
+            return 'payroll'
+        if any(term in normalized for term in ['utility', 'utilities', 'electric', 'water', 'gas']):
+            return 'utilities'
+        if any(term in normalized for term in ['insurance', 'liability']):
+            return 'insurance'
+        if any(term in normalized for term in ['marketing', 'advertising', 'ads', 'promotion']):
+            return 'marketing'
+        if any(term in normalized for term in ['software', 'subscription', 'saas', 'technology', 'it']):
+            return 'software'
+        if any(term in normalized for term in ['professional', 'legal', 'accounting', 'consultant']):
+            return 'professional_fees'
+        if any(term in normalized for term in ['repair', 'maintenance', 'upkeep']):
+            return 'repairs_maintenance'
+        if any(term in normalized for term in ['admin', 'office', 'general', 'miscellaneous']):
+            return 'other_opex'
+
+        # D&A heuristics
+        if any(term in normalized for term in ['depreciation', 'amortization']):
+            return 'depreciation'
+
+        # Interest heuristics
+        if 'interest' in normalized and 'expense' in normalized:
+            return 'interest'
+        if 'loan' in normalized and 'interest' in normalized:
+            return 'interest'
+
+        # Other income/expense
+        if 'other income' in normalized or 'non operating income' in normalized:
+            return 'other_income'
+        if 'other expense' in normalized or 'non operating expense' in normalized:
+            return 'other_expense'
+
+        # Tax heuristics
+        if any(term in normalized for term in ['tax', 'income tax', 'corporate tax']):
+            return 'tax'
+
+        # If we have generic opex terms, put in other_opex
+        if any(term in normalized for term in ['expense', 'cost', 'fee']):
+            return 'other_opex'
+
+        # Unmapped
+        return None
+
+    def compute_period_data(pnl_dict, mapping_dict=None):
+        """Compute all derived totals from raw components using smart mapping"""
+        # Initialize all categories
+        mapped_accounts = {
+            'court_rev': 0, 'league_rev': 0, 'corporate_rev': 0,
+            'tournament_rev': 0, 'membership_rev': 0, 'retail_rev': 0,
+            'revenue_other': 0, 'cogs': 0,
+            'rent': 0, 'payroll': 0, 'utilities': 0, 'insurance': 0,
+            'marketing': 0, 'software': 0, 'professional_fees': 0,
+            'repairs_maintenance': 0, 'other_opex': 0,
+            'depreciation': 0, 'interest': 0,
+            'other_income': 0, 'other_expense': 0, 'tax': 0
+        }
+
+        unmapped = {}
+
+        # Process each account in the period
+        for account_name, value in pnl_dict.items():
+            if account_name == 'month':  # Skip metadata fields
+                continue
+
+            # Try to map the account
+            category = map_account_to_category(account_name, mapping_dict)
+
+            if category and category in mapped_accounts:
+                mapped_accounts[category] += value
+            else:
+                # Check if it's already a standard category name
+                if account_name in mapped_accounts:
+                    mapped_accounts[account_name] += value
+                else:
+                    unmapped[account_name] = value
+
+        # Extract mapped values
+        court_rev = mapped_accounts['court_rev']
+        league_rev = mapped_accounts['league_rev']
+        corp_rev = mapped_accounts['corporate_rev']
+        tourney_rev = mapped_accounts['tournament_rev']
+        membership_rev = mapped_accounts['membership_rev']
+        retail_rev = mapped_accounts['retail_rev']
+        revenue_other = mapped_accounts['revenue_other']
 
         # Compute total revenue
-        total_revenue = court_rev + league_rev + corp_rev + tourney_rev + membership_rev + retail_rev
+        total_revenue = court_rev + league_rev + corp_rev + tourney_rev + membership_rev + retail_rev + revenue_other
 
         # COGS
-        cogs = pnl_dict.get("cogs", 0)
+        cogs = mapped_accounts['cogs']
 
         # Compute Gross Profit
         gross_profit = total_revenue - cogs
 
-        # Operating expenses - extract or use fixed_opex as fallback
-        fixed_opex = pnl_dict.get("fixed_opex", 0)
+        # Operating expenses
+        rent = mapped_accounts['rent']
+        payroll = mapped_accounts['payroll']
+        utilities = mapped_accounts['utilities']
+        insurance = mapped_accounts['insurance']
+        marketing = mapped_accounts['marketing']
+        software = mapped_accounts['software']
+        professional = mapped_accounts['professional_fees']
+        repairs = mapped_accounts['repairs_maintenance']
+        other_opex = mapped_accounts['other_opex']
 
-        # If we have detailed opex breakdown, use it; otherwise use fixed_opex
-        rent = pnl_dict.get("rent", fixed_opex * 0.3)
-        utilities = pnl_dict.get("utilities", fixed_opex * 0.15)
-        insurance = pnl_dict.get("insurance", fixed_opex * 0.1)
-        marketing = pnl_dict.get("marketing", fixed_opex * 0.15)
-        software = pnl_dict.get("software", fixed_opex * 0.1)
-        professional = pnl_dict.get("professional_fees", fixed_opex * 0.05)
-        repairs = pnl_dict.get("repairs_maintenance", fixed_opex * 0.05)
-        other_opex = pnl_dict.get("other_opex", fixed_opex * 0.1)
+        # If we have a fixed_opex field and no detailed breakdown, use it
+        if 'fixed_opex' in pnl_dict and (rent + utilities + insurance + marketing + software + professional + repairs + other_opex) == 0:
+            fixed_opex = pnl_dict['fixed_opex']
+            # Apply standard allocation only as last resort
+            rent = fixed_opex * 0.3
+            utilities = fixed_opex * 0.15
+            insurance = fixed_opex * 0.1
+            marketing = fixed_opex * 0.15
+            software = fixed_opex * 0.1
+            professional = fixed_opex * 0.05
+            repairs = fixed_opex * 0.05
+            other_opex = fixed_opex * 0.1
 
         # Compute total operating expenses
-        total_opex = rent + utilities + insurance + marketing + software + professional + repairs + other_opex
+        total_opex = rent + payroll + utilities + insurance + marketing + software + professional + repairs + other_opex
 
         # Compute EBITDA
         ebitda = gross_profit - total_opex
 
         # Depreciation & Amortization
-        depreciation = pnl_dict.get("depreciation", 0)
+        depreciation = mapped_accounts['depreciation']
 
         # Compute EBIT
         ebit = ebitda - depreciation
 
         # Interest
-        interest = pnl_dict.get("interest", 0)
+        interest = mapped_accounts['interest']
 
-        # Other income/expense
-        other = pnl_dict.get("other_income", 0) - pnl_dict.get("other_expense", 0)
+        # Other income/expense (net)
+        other = mapped_accounts['other_income'] - mapped_accounts['other_expense']
 
         # Compute EBT
         ebt = ebit - interest + other
 
         # Taxes
-        tax = pnl_dict.get("tax", 0)
+        tax = mapped_accounts['tax']
 
         # Compute Net Income
         net_income = ebt - tax
@@ -916,6 +1055,7 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
 
             # Operating expenses
             "rent": rent,
+            "payroll": payroll,
             "utilities": utilities,
             "insurance": insurance,
             "marketing": marketing,
@@ -933,12 +1073,15 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
             "other": other,
             "ebt": ebt,
             "tax": tax,
-            "net_income": net_income
+            "net_income": net_income,
+
+            # Metadata
+            "unmapped": unmapped
         }
 
     # Compute period data for all months and Y2
-    periods_y1 = [compute_period_data(pnl) for pnl in pnl_y1_monthly]
-    period_y2 = compute_period_data(pnl_y2_eoy) if pnl_y2_eoy else {}
+    periods_y1 = [compute_period_data(pnl, mapping_dict) for pnl in pnl_y1_monthly]
+    period_y2 = compute_period_data(pnl_y2_eoy, mapping_dict) if pnl_y2_eoy else {}
 
     # Build the data structure using standard P&L ordering
     data = []
@@ -1011,14 +1154,32 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
 
     # Operating Expenses
     data.append(["Operating Expenses"] + ["" for _ in range(14)])
-    add_data_row("  Rent", "rent")
-    add_data_row("  Utilities", "utilities")
-    add_data_row("  Insurance", "insurance")
-    add_data_row("  Marketing", "marketing")
-    add_data_row("  Software/Technology", "software")
-    add_data_row("  Professional fees", "professional_fees")
-    add_data_row("  Repairs & maintenance", "repairs_maintenance")
-    add_data_row("  Other operating expenses", "other_opex")
+
+    # Track opex start and end for proper summation
+    opex_start_row = len(data)
+
+    # Add opex detail lines - only show non-zero lines
+    if any(p.get("payroll", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("payroll", 0) > 0):
+        add_data_row("  Payroll", "payroll")
+    if any(p.get("rent", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("rent", 0) > 0):
+        add_data_row("  Rent", "rent")
+    if any(p.get("utilities", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("utilities", 0) > 0):
+        add_data_row("  Utilities", "utilities")
+    if any(p.get("insurance", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("insurance", 0) > 0):
+        add_data_row("  Insurance", "insurance")
+    if any(p.get("marketing", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("marketing", 0) > 0):
+        add_data_row("  Marketing", "marketing")
+    if any(p.get("software", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("software", 0) > 0):
+        add_data_row("  Software/Technology", "software")
+    if any(p.get("professional_fees", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("professional_fees", 0) > 0):
+        add_data_row("  Professional fees", "professional_fees")
+    if any(p.get("repairs_maintenance", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("repairs_maintenance", 0) > 0):
+        add_data_row("  Repairs & maintenance", "repairs_maintenance")
+    if any(p.get("other_opex", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("other_opex", 0) > 0):
+        add_data_row("  Other operating expenses", "other_opex")
+
+    opex_end_row = len(data)
+
     add_data_row("Total Operating Expenses", "total_opex", is_total=True)
 
     # EBITDA
@@ -1178,10 +1339,11 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
         if abs(gp_expected - gp_computed) > tolerance:
             validation_issues.append(f"{month}: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
 
-        # Validate Total Opex
-        opex_sum = (period["rent"] + period["utilities"] + period["insurance"] +
-                    period["marketing"] + period["software"] + period["professional_fees"] +
-                    period["repairs_maintenance"] + period["other_opex"])
+        # Validate Total Opex - sum ALL opex components
+        opex_sum = (period.get("payroll", 0) + period.get("rent", 0) + period.get("utilities", 0) +
+                    period.get("insurance", 0) + period.get("marketing", 0) + period.get("software", 0) +
+                    period.get("professional_fees", 0) + period.get("repairs_maintenance", 0) +
+                    period.get("other_opex", 0))
         opex_computed = period["total_opex"]
         if abs(opex_sum - opex_computed) > tolerance:
             validation_issues.append(f"{month}: Total Opex mismatch (expected {opex_sum:.2f}, got {opex_computed:.2f})")
