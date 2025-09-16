@@ -824,6 +824,58 @@ def main():
             - Depreciation: {cfg.finance.depreciation_years_leasehold} years (leasehold), {cfg.finance.depreciation_years_equipment} years (equipment)
             """)
 
+# Exact labels from banker template (Column A, in order)
+TEMPLATE_LABELS = [
+    "Revenue (Sales)",
+    "Category 1",
+    "Category 2",
+    "Category 3",
+    "Category 4",
+    "Category 5",
+    "Category 6",
+    "Category 7",
+    "Total Revenue (Sales)",
+    "",  # Empty row
+    "Cost of Sales",
+    "",  # Empty row
+    "Gross Profit",
+    "",  # Empty row
+    "Operating Expenses",
+    "Salaries",
+    "Payroll Taxes & Benefits",
+    "Rent",
+    "Advertising & Marketing",
+    "Office Supplies",
+    "Utilities",
+    "Insurance",
+    "Repairs & Maintenance",
+    "Professional Fees",
+    "Travel",
+    "Telephone",
+    "Postage & Delivery",
+    "Licenses & Permits",
+    "Miscellaneous",
+    "Total Operating Expenses",
+    "",  # Empty row
+    "Operating Profit",
+    "",  # Empty row
+    "Other Income/(Expense)",
+    "Interest Income",
+    "Interest Expense",
+    "Other Income",
+    "Other Expense",
+    "Total Other Income/(Expense)",
+    "",  # Empty row
+    "Net Profit Before Taxes",
+    "",  # Empty row
+    "Income Taxes",
+    "Federal Income Tax",
+    "State Income Tax",
+    "Local Income Tax",
+    "",  # Empty row
+    "Net Operating Income"
+]
+
 def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     """Create professional banker-format P&L Excel file with Y1 monthly and Y2 EOY columns
 
@@ -1088,7 +1140,7 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     periods_y1 = [compute_period_data(pnl, mapping_dict) for pnl in pnl_y1_monthly]
     period_y2 = compute_period_data(pnl_y2_eoy, mapping_dict) if pnl_y2_eoy else {}
 
-    # Build the data structure using standard P&L ordering
+    # Build the data structure using exact banker template labels
     data = []
 
     # Title row (will be merged and centered)
@@ -1118,99 +1170,203 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     date_row.append(f"for the year ended 12/31/{current_year + 1}")
     data.append(date_row)
 
-    # Helper function to add a data row
-    def add_data_row(label, field_name=None, is_total=False):
-        row = [label, ""]  # A, B columns
-        for i in range(12):
-            if i < len(periods_y1) and field_name:
-                row.append(periods_y1[i].get(field_name, 0))
+    # Build rows from TEMPLATE_LABELS
+    for label in TEMPLATE_LABELS:
+        row = [label, ""]  # A, B columns always
+
+        # Handle each label type
+        if label == "":  # Empty rows
+            row.extend(["" for _ in range(13)])
+
+        # Revenue categories - map our revenue types to Category 1-6
+        elif label == "Category 1":  # Court rental
+            for i in range(12):
+                row.append(periods_y1[i].get("court_rev", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("court_rev", 0) if period_y2 else 0)
+        elif label == "Category 2":  # League
+            for i in range(12):
+                row.append(periods_y1[i].get("league_rev", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("league_rev", 0) if period_y2 else 0)
+        elif label == "Category 3":  # Corporate
+            for i in range(12):
+                row.append(periods_y1[i].get("corporate_rev", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("corporate_rev", 0) if period_y2 else 0)
+        elif label == "Category 4":  # Tournament
+            for i in range(12):
+                row.append(periods_y1[i].get("tournament_rev", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("tournament_rev", 0) if period_y2 else 0)
+        elif label == "Category 5":  # Membership
+            for i in range(12):
+                row.append(periods_y1[i].get("membership_rev", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("membership_rev", 0) if period_y2 else 0)
+        elif label == "Category 6":  # Retail
+            for i in range(12):
+                row.append(periods_y1[i].get("retail_rev", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("retail_rev", 0) if period_y2 else 0)
+        elif label == "Category 7":  # Unused
+            row.extend([0 for _ in range(13)])
+
+        # Total Revenue
+        elif label == "Total Revenue (Sales)":
+            for i in range(12):
+                row.append(periods_y1[i].get("total_revenue", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("total_revenue", 0) if period_y2 else 0)
+
+        # Cost of Sales
+        elif label == "Cost of Sales":
+            for i in range(12):
+                row.append(periods_y1[i].get("cogs", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("cogs", 0) if period_y2 else 0)
+
+        # Gross Profit
+        elif label == "Gross Profit":
+            for i in range(12):
+                row.append(periods_y1[i].get("gross_profit", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("gross_profit", 0) if period_y2 else 0)
+
+        # Operating Expenses mapping
+        elif label == "Salaries":
+            for i in range(12):
+                row.append(periods_y1[i].get("payroll", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("payroll", 0) if period_y2 else 0)
+        elif label == "Payroll Taxes & Benefits":
+            row.extend([0 for _ in range(13)])  # Could map if we had this data
+        elif label == "Rent":
+            for i in range(12):
+                row.append(periods_y1[i].get("rent", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("rent", 0) if period_y2 else 0)
+        elif label == "Advertising & Marketing":
+            for i in range(12):
+                row.append(periods_y1[i].get("marketing", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("marketing", 0) if period_y2 else 0)
+        elif label == "Office Supplies":
+            row.extend([0 for _ in range(13)])  # Could be part of other_opex
+        elif label == "Utilities":
+            for i in range(12):
+                row.append(periods_y1[i].get("utilities", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("utilities", 0) if period_y2 else 0)
+        elif label == "Insurance":
+            for i in range(12):
+                row.append(periods_y1[i].get("insurance", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("insurance", 0) if period_y2 else 0)
+        elif label == "Repairs & Maintenance":
+            for i in range(12):
+                row.append(periods_y1[i].get("repairs_maintenance", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("repairs_maintenance", 0) if period_y2 else 0)
+        elif label == "Professional Fees":
+            for i in range(12):
+                row.append(periods_y1[i].get("professional_fees", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("professional_fees", 0) if period_y2 else 0)
+        elif label == "Travel":
+            row.extend([0 for _ in range(13)])
+        elif label == "Telephone":
+            for i in range(12):
+                row.append(periods_y1[i].get("software", 0) * 0.2 if i < len(periods_y1) else 0)  # Part of software/tech
+            row.append(period_y2.get("software", 0) * 0.2 if period_y2 else 0)
+        elif label == "Postage & Delivery":
+            row.extend([0 for _ in range(13)])
+        elif label == "Licenses & Permits":
+            row.extend([0 for _ in range(13)])
+        elif label == "Miscellaneous":
+            for i in range(12):
+                row.append(periods_y1[i].get("other_opex", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("other_opex", 0) if period_y2 else 0)
+
+        # Total Operating Expenses
+        elif label == "Total Operating Expenses":
+            for i in range(12):
+                row.append(periods_y1[i].get("total_opex", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("total_opex", 0) if period_y2 else 0)
+
+        # Operating Profit (EBIT before D&A)
+        elif label == "Operating Profit":
+            for i in range(12):
+                # Operating Profit = Gross Profit - Total Operating Expenses (before D&A)
+                if i < len(periods_y1):
+                    op_profit = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    row.append(op_profit)
+                else:
+                    row.append(0)
+            if period_y2:
+                op_profit_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                row.append(op_profit_y2)
             else:
                 row.append(0)
-        # Y2 EOY
-        if field_name and period_y2:
-            row.append(period_y2.get(field_name, 0))
+
+        # Other Income/Expense items
+        elif label == "Interest Income":
+            row.extend([0 for _ in range(13)])  # We don't track interest income separately
+        elif label == "Interest Expense":
+            for i in range(12):
+                row.append(periods_y1[i].get("interest_expense", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("interest_expense", 0) if period_y2 else 0)
+        elif label == "Other Income":
+            row.extend([0 for _ in range(13)])  # Could map if available
+        elif label == "Other Expense":
+            row.extend([0 for _ in range(13)])  # Could map if available
+        elif label == "Total Other Income/(Expense)":
+            for i in range(12):
+                row.append(periods_y1[i].get("total_other_net", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("total_other_net", 0) if period_y2 else 0)
+
+        # Net Profit Before Taxes (EBT)
+        elif label == "Net Profit Before Taxes":
+            for i in range(12):
+                if i < len(periods_y1):
+                    # Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
+                    op_profit = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    npbt = op_profit + periods_y1[i].get("total_other_net", 0)
+                    row.append(npbt)
+                else:
+                    row.append(0)
+            if period_y2:
+                op_profit_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                npbt_y2 = op_profit_y2 + period_y2.get("total_other_net", 0)
+                row.append(npbt_y2)
+            else:
+                row.append(0)
+
+        # Tax items
+        elif label == "Federal Income Tax":
+            for i in range(12):
+                row.append(periods_y1[i].get("tax", 0) * 0.7 if i < len(periods_y1) else 0)  # Assume 70% federal
+            row.append(period_y2.get("tax", 0) * 0.7 if period_y2 else 0)
+        elif label == "State Income Tax":
+            for i in range(12):
+                row.append(periods_y1[i].get("tax", 0) * 0.25 if i < len(periods_y1) else 0)  # Assume 25% state
+            row.append(period_y2.get("tax", 0) * 0.25 if period_y2 else 0)
+        elif label == "Local Income Tax":
+            for i in range(12):
+                row.append(periods_y1[i].get("tax", 0) * 0.05 if i < len(periods_y1) else 0)  # Assume 5% local
+            row.append(period_y2.get("tax", 0) * 0.05 if period_y2 else 0)
+
+        # Net Operating Income (Net Income)
+        elif label == "Net Operating Income":
+            for i in range(12):
+                if i < len(periods_y1):
+                    # Net Operating Income = Net Profit Before Taxes - All Taxes
+                    op_profit = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    npbt = op_profit + periods_y1[i].get("total_other_net", 0)
+                    noi = npbt - periods_y1[i].get("tax", 0)
+                    row.append(noi)
+                else:
+                    row.append(0)
+            if period_y2:
+                op_profit_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                npbt_y2 = op_profit_y2 + period_y2.get("total_other_net", 0)
+                noi_y2 = npbt_y2 - period_y2.get("tax", 0)
+                row.append(noi_y2)
+            else:
+                row.append(0)
+
+        # Section headers (no numbers)
+        elif label in ["Revenue (Sales)", "Operating Expenses", "Other Income/(Expense)", "Income Taxes"]:
+            row.extend(["" for _ in range(13)])
         else:
-            row.append(0)
+            # Default to zeros for any unhandled labels
+            row.extend([0 for _ in range(13)])
+
         data.append(row)
-
-    # Build P&L according to standard banker format
-
-    # Revenue section
-    data.append(["Revenue"] + ["" for _ in range(14)])
-    add_data_row("  Court rental revenue", "court_rev")
-    add_data_row("  League revenue", "league_rev")
-    add_data_row("  Corporate events revenue", "corporate_rev")
-    add_data_row("  Tournament revenue", "tournament_rev")
-    add_data_row("  Membership revenue", "membership_rev")
-    add_data_row("  Retail/Pro shop revenue", "retail_rev")
-    add_data_row("Total Revenue", "total_revenue", is_total=True)
-
-    data.append(["" for _ in range(15)])  # Empty row
-
-    # Cost of Goods Sold
-    data.append(["Cost of Goods Sold"] + ["" for _ in range(14)])
-    add_data_row("  Cost of goods sold", "cogs")
-    add_data_row("Total Cost of Goods Sold", "cogs", is_total=True)
-
-    # Gross Profit
-    add_data_row("Gross Profit", "gross_profit", is_total=True)
-
-    data.append(["" for _ in range(15)])  # Empty row
-
-    # Operating Expenses
-    data.append(["Operating Expenses"] + ["" for _ in range(14)])
-
-    # Track opex start and end for proper summation
-    opex_start_row = len(data)
-
-    # Add opex detail lines - only show non-zero lines
-    if any(p.get("payroll", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("payroll", 0) > 0):
-        add_data_row("  Payroll", "payroll")
-    if any(p.get("rent", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("rent", 0) > 0):
-        add_data_row("  Rent", "rent")
-    if any(p.get("utilities", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("utilities", 0) > 0):
-        add_data_row("  Utilities", "utilities")
-    if any(p.get("insurance", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("insurance", 0) > 0):
-        add_data_row("  Insurance", "insurance")
-    if any(p.get("marketing", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("marketing", 0) > 0):
-        add_data_row("  Marketing", "marketing")
-    if any(p.get("software", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("software", 0) > 0):
-        add_data_row("  Software/Technology", "software")
-    if any(p.get("professional_fees", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("professional_fees", 0) > 0):
-        add_data_row("  Professional fees", "professional_fees")
-    if any(p.get("repairs_maintenance", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("repairs_maintenance", 0) > 0):
-        add_data_row("  Repairs & maintenance", "repairs_maintenance")
-    if any(p.get("other_opex", 0) > 0 for p in periods_y1) or (period_y2 and period_y2.get("other_opex", 0) > 0):
-        add_data_row("  Other operating expenses", "other_opex")
-
-    opex_end_row = len(data)
-
-    add_data_row("Total Operating Expenses", "total_opex", is_total=True)
-
-    # EBITDA
-    add_data_row("EBITDA", "ebitda", is_total=True)
-
-    # Depreciation & Amortization
-    add_data_row("  Depreciation & Amortization", "depreciation")
-
-    # EBIT
-    add_data_row("EBIT (Operating Income)", "ebit", is_total=True)
-
-    data.append(["" for _ in range(15)])  # Empty row
-
-    # Other Income/Expense
-    data.append(["Other Income/(Expense)"] + ["" for _ in range(14)])
-    add_data_row("  Interest expense", "interest_expense")  # Display as positive
-    add_data_row("Total Other Income/(Expense)", "total_other_net", is_total=True)  # Signed net
-
-    # EBT
-    add_data_row("Earnings Before Taxes", "ebt", is_total=True)
-
-    # Taxes
-    add_data_row("  Income taxes", "tax")
-
-    # Net Income
-    add_data_row("Net Income", "net_income", is_total=True)
 
     # Create DataFrame
     df = pd.DataFrame(data)
@@ -1277,17 +1433,15 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
             if col < len(data[2]) and data[2][col]:
                 worksheet.write(2, col, data[2][col], date_format)
 
-        # Define total lines that need emphasis
+        # Define total lines that need emphasis (matching template labels)
         total_labels = [
-            "Total Revenue",
-            "Total Cost of Goods Sold",
+            "Total Revenue (Sales)",
             "Gross Profit",
             "Total Operating Expenses",
-            "EBITDA",
-            "EBIT (Operating Income)",
+            "Operating Profit",
             "Total Other Income/(Expense)",
-            "Earnings Before Taxes",
-            "Net Income"
+            "Net Profit Before Taxes",
+            "Net Operating Income"
         ]
 
         # Format all data rows
@@ -1334,50 +1488,52 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     validation_issues = []
     tolerance = 0.01
 
-    # Validate Y1 months
+    # Validate Y1 months using banker template terminology
     for i, period in enumerate(periods_y1):
         month = month_names[i] if i < 12 else f"Month {i+1}"
 
-        # Validate Gross Profit
+        # Validate Total Revenue (Sales) = sum of revenue categories
+        revenue_sum = (period.get("court_rev", 0) + period.get("league_rev", 0) +
+                      period.get("corporate_rev", 0) + period.get("tournament_rev", 0) +
+                      period.get("membership_rev", 0) + period.get("retail_rev", 0))
+        revenue_computed = period.get("total_revenue", 0)
+        if abs(revenue_sum - revenue_computed) > tolerance:
+            validation_issues.append(f"{month}: Total Revenue mismatch (expected {revenue_sum:.2f}, got {revenue_computed:.2f})")
+
+        # Validate Gross Profit = Total Revenue - Cost of Sales
         gp_expected = period["total_revenue"] - period["cogs"]
         gp_computed = period["gross_profit"]
         if abs(gp_expected - gp_computed) > tolerance:
             validation_issues.append(f"{month}: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
 
-        # Validate Total Opex - sum ALL opex components
+        # Validate Total Operating Expenses = sum of all opex components
         opex_sum = (period.get("payroll", 0) + period.get("rent", 0) + period.get("utilities", 0) +
                     period.get("insurance", 0) + period.get("marketing", 0) + period.get("software", 0) +
                     period.get("professional_fees", 0) + period.get("repairs_maintenance", 0) +
                     period.get("other_opex", 0))
         opex_computed = period["total_opex"]
         if abs(opex_sum - opex_computed) > tolerance:
-            validation_issues.append(f"{month}: Total Opex mismatch (expected {opex_sum:.2f}, got {opex_computed:.2f})")
+            validation_issues.append(f"{month}: Total Operating Expenses mismatch (expected {opex_sum:.2f}, got {opex_computed:.2f})")
 
-        # Validate EBITDA
-        ebitda_expected = period["gross_profit"] - period["total_opex"]
-        ebitda_computed = period["ebitda"]
-        if abs(ebitda_expected - ebitda_computed) > tolerance:
-            validation_issues.append(f"{month}: EBITDA mismatch (expected {ebitda_expected:.2f}, got {ebitda_computed:.2f})")
+        # Validate Operating Profit = Gross Profit - Total Operating Expenses
+        op_profit_expected = period["gross_profit"] - period["total_opex"]
+        op_profit_computed = period["ebitda"]  # Our EBITDA is their Operating Profit
+        if abs(op_profit_expected - op_profit_computed) > tolerance:
+            validation_issues.append(f"{month}: Operating Profit mismatch (expected {op_profit_expected:.2f}, got {op_profit_computed:.2f})")
 
-        # Validate EBIT
-        ebit_expected = period["ebitda"] - period["depreciation"]
-        ebit_computed = period["ebit"]
-        if abs(ebit_expected - ebit_computed) > tolerance:
-            validation_issues.append(f"{month}: EBIT mismatch (expected {ebit_expected:.2f}, got {ebit_computed:.2f})")
+        # Validate Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
+        npbt_expected = op_profit_expected + period["total_other_net"]
+        npbt_computed = period["ebt"]
+        if abs(npbt_expected - npbt_computed) > tolerance:
+            validation_issues.append(f"{month}: Net Profit Before Taxes mismatch (expected {npbt_expected:.2f}, got {npbt_computed:.2f})")
 
-        # Validate EBT
-        ebt_expected = period["ebit"] + period["total_other_net"]
-        ebt_computed = period["ebt"]
-        if abs(ebt_expected - ebt_computed) > tolerance:
-            validation_issues.append(f"{month}: EBT mismatch (expected {ebt_expected:.2f}, got {ebt_computed:.2f})")
+        # Validate Net Operating Income = Net Profit Before Taxes - Taxes
+        noi_expected = npbt_computed - period["tax"]
+        noi_computed = period["net_income"]
+        if abs(noi_expected - noi_computed) > tolerance:
+            validation_issues.append(f"{month}: Net Operating Income mismatch (expected {noi_expected:.2f}, got {noi_computed:.2f})")
 
-        # Validate Net Income
-        ni_expected = period["ebt"] - period["tax"]
-        ni_computed = period["net_income"]
-        if abs(ni_expected - ni_computed) > tolerance:
-            validation_issues.append(f"{month}: Net Income mismatch (expected {ni_expected:.2f}, got {ni_computed:.2f})")
-
-    # Validate Y2 if present
+    # Validate Y2 if present (using same banker terminology)
     if period_y2:
         # Validate Gross Profit
         gp_expected = period_y2["total_revenue"] - period_y2["cogs"]
@@ -1385,23 +1541,23 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         if abs(gp_expected - gp_computed) > tolerance:
             validation_issues.append(f"Year 2: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
 
-        # Validate EBITDA
-        ebitda_expected = period_y2["gross_profit"] - period_y2["total_opex"]
-        ebitda_computed = period_y2["ebitda"]
-        if abs(ebitda_expected - ebitda_computed) > tolerance:
-            validation_issues.append(f"Year 2: EBITDA mismatch (expected {ebitda_expected:.2f}, got {ebitda_computed:.2f})")
+        # Validate Operating Profit
+        op_profit_expected = period_y2["gross_profit"] - period_y2["total_opex"]
+        op_profit_computed = period_y2["ebitda"]
+        if abs(op_profit_expected - op_profit_computed) > tolerance:
+            validation_issues.append(f"Year 2: Operating Profit mismatch (expected {op_profit_expected:.2f}, got {op_profit_computed:.2f})")
 
-        # Validate EBT
-        ebt_expected = period_y2["ebit"] + period_y2["total_other_net"]
-        ebt_computed = period_y2["ebt"]
-        if abs(ebt_expected - ebt_computed) > tolerance:
-            validation_issues.append(f"Year 2: EBT mismatch (expected {ebt_expected:.2f}, got {ebt_computed:.2f})")
+        # Validate Net Profit Before Taxes
+        npbt_expected = op_profit_expected + period_y2["total_other_net"]
+        npbt_computed = period_y2["ebt"]
+        if abs(npbt_expected - npbt_computed) > tolerance:
+            validation_issues.append(f"Year 2: Net Profit Before Taxes mismatch (expected {npbt_expected:.2f}, got {npbt_computed:.2f})")
 
-        # Validate Net Income
-        ni_expected = period_y2["ebt"] - period_y2["tax"]
-        ni_computed = period_y2["net_income"]
-        if abs(ni_expected - ni_computed) > tolerance:
-            validation_issues.append(f"Year 2: Net Income mismatch (expected {ni_expected:.2f}, got {ni_computed:.2f})")
+        # Validate Net Operating Income
+        noi_expected = period_y2["ebt"] - period_y2["tax"]
+        noi_computed = period_y2["net_income"]
+        if abs(noi_expected - noi_computed) > tolerance:
+            validation_issues.append(f"Year 2: Net Operating Income mismatch (expected {noi_expected:.2f}, got {noi_computed:.2f})")
 
     if validation_issues:
         import streamlit as st
