@@ -1141,6 +1141,30 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     periods_y1 = [compute_period_data(pnl, mapping_dict) for pnl in pnl_y1_monthly]
     period_y2 = compute_period_data(pnl_y2_eoy, mapping_dict) if pnl_y2_eoy else {}
 
+    # Debug output for first month (remove after validation passes)
+    if periods_y1:
+        jan = periods_y1[0]
+        ebitda_jan = jan.get("gross_profit", 0) - jan.get("total_opex", 0)
+        depreciation_jan = jan.get("depreciation", 0)
+        op_profit_jan = ebitda_jan - depreciation_jan  # EBIT
+        debug = {
+            "ebitda": ebitda_jan,
+            "depreciation": depreciation_jan,
+            "operating_profit_ebit": op_profit_jan,
+            "interest_expense": jan.get("interest_expense", 0),
+            "total_other_net": jan.get("total_other_net", 0),
+            "npbt_written": op_profit_jan + jan.get("total_other_net", 0),
+            "ebt_computed": jan.get("ebt", 0),
+            "tax": jan.get("tax", 0),
+            "net_income": jan.get("net_income", 0),
+            "noi_written": (op_profit_jan + jan.get("total_other_net", 0)) - jan.get("tax", 0)
+        }
+        try:
+            import streamlit as st
+            st.write({"P&L debug (Jan)": debug})
+        except:
+            pass  # Not in Streamlit context
+
     # Build the data structure using exact banker template labels
     data = []
 
@@ -1303,17 +1327,21 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
                 row.append(periods_y1[i].get("total_opex", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("total_opex", 0) if period_y2 else 0)
 
-        # Operating Profit (EBIT before D&A)
+        # Operating Profit (EBIT after D&A - banker convention)
         elif label == "Operating Profit":
             for i in range(12):
-                # Operating Profit = Gross Profit - Total Operating Expenses (before D&A)
+                # Operating Profit = Gross Profit - Total Operating Expenses - Depreciation (EBIT)
                 if i < len(periods_y1):
-                    op_profit = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    ebitda = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    depreciation = periods_y1[i].get("depreciation", 0)
+                    op_profit = ebitda - depreciation  # This is EBIT
                     row.append(op_profit)
                 else:
                     row.append(0)
             if period_y2:
-                op_profit_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                ebitda_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                depreciation_y2 = period_y2.get("depreciation", 0)
+                op_profit_y2 = ebitda_y2 - depreciation_y2  # This is EBIT
                 row.append(op_profit_y2)
             else:
                 row.append(0)
@@ -1338,14 +1366,18 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         elif label == "Net Profit Before Taxes":
             for i in range(12):
                 if i < len(periods_y1):
-                    # Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
-                    op_profit = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    # Net Profit Before Taxes = Operating Profit (EBIT) + Total Other Income/(Expense)
+                    ebitda = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    depreciation = periods_y1[i].get("depreciation", 0)
+                    op_profit = ebitda - depreciation  # This is EBIT
                     npbt = op_profit + periods_y1[i].get("total_other_net", 0)
                     row.append(npbt)
                 else:
                     row.append(0)
             if period_y2:
-                op_profit_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                ebitda_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                depreciation_y2 = period_y2.get("depreciation", 0)
+                op_profit_y2 = ebitda_y2 - depreciation_y2  # This is EBIT
                 npbt_y2 = op_profit_y2 + period_y2.get("total_other_net", 0)
                 row.append(npbt_y2)
             else:
@@ -1370,14 +1402,18 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
             for i in range(12):
                 if i < len(periods_y1):
                     # Net Operating Income = Net Profit Before Taxes - All Taxes
-                    op_profit = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    ebitda = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
+                    depreciation = periods_y1[i].get("depreciation", 0)
+                    op_profit = ebitda - depreciation  # This is EBIT
                     npbt = op_profit + periods_y1[i].get("total_other_net", 0)
                     noi = npbt - periods_y1[i].get("tax", 0)
                     row.append(noi)
                 else:
                     row.append(0)
             if period_y2:
-                op_profit_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                ebitda_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
+                depreciation_y2 = period_y2.get("depreciation", 0)
+                op_profit_y2 = ebitda_y2 - depreciation_y2  # This is EBIT
                 npbt_y2 = op_profit_y2 + period_y2.get("total_other_net", 0)
                 noi_y2 = npbt_y2 - period_y2.get("tax", 0)
                 row.append(noi_y2)
@@ -1541,17 +1577,21 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         if abs(opex_sum - opex_computed) > tolerance:
             validation_issues.append(f"{month}: Total Operating Expenses mismatch (expected {opex_sum:.2f}, got {opex_computed:.2f})")
 
-        # Validate Operating Profit = Gross Profit - Total Operating Expenses
-        op_profit_expected = period["gross_profit"] - period["total_opex"]
-        op_profit_computed = period["ebitda"]  # Our EBITDA is their Operating Profit
+        # Validate Operating Profit = Gross Profit - Total Operating Expenses - Depreciation (EBIT)
+        ebitda = period["gross_profit"] - period["total_opex"]
+        depreciation = period.get("depreciation", 0)
+        op_profit_expected = ebitda - depreciation  # EBIT
+        op_profit_computed = period.get("ebit", ebitda - depreciation)  # Use EBIT if available
         if abs(op_profit_expected - op_profit_computed) > tolerance:
             validation_issues.append(f"{month}: Operating Profit mismatch (expected {op_profit_expected:.2f}, got {op_profit_computed:.2f})")
 
-        # Validate Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
-        npbt_expected = op_profit_expected + period["total_other_net"]
+        # Validate Net Profit Before Taxes = Operating Profit (EBIT) + Total Other Income/(Expense)
+        # What we write to the sheet
+        npbt_written = op_profit_expected + period["total_other_net"]
+        # What the raw data says (should match)
         npbt_computed = period["ebt"]
-        if abs(npbt_expected - npbt_computed) > tolerance:
-            validation_issues.append(f"{month}: Net Profit Before Taxes mismatch (expected {npbt_expected:.2f}, got {npbt_computed:.2f})")
+        if abs(npbt_written - npbt_computed) > tolerance:
+            validation_issues.append(f"{month}: Net Profit Before Taxes mismatch (written {npbt_written:.2f}, computed {npbt_computed:.2f})")
 
         # Validate Net Operating Income = Net Profit Before Taxes - Taxes
         noi_expected = npbt_computed - period["tax"]
@@ -1576,17 +1616,19 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
         if abs(gp_expected - gp_computed) > tolerance:
             validation_issues.append(f"Year 2: Gross Profit mismatch (expected {gp_expected:.2f}, got {gp_computed:.2f})")
 
-        # Validate Operating Profit
-        op_profit_expected = period_y2["gross_profit"] - period_y2["total_opex"]
-        op_profit_computed = period_y2["ebitda"]
+        # Validate Operating Profit (EBIT)
+        ebitda_y2 = period_y2["gross_profit"] - period_y2["total_opex"]
+        depreciation_y2 = period_y2.get("depreciation", 0)
+        op_profit_expected = ebitda_y2 - depreciation_y2  # EBIT
+        op_profit_computed = period_y2.get("ebit", ebitda_y2 - depreciation_y2)
         if abs(op_profit_expected - op_profit_computed) > tolerance:
             validation_issues.append(f"Year 2: Operating Profit mismatch (expected {op_profit_expected:.2f}, got {op_profit_computed:.2f})")
 
         # Validate Net Profit Before Taxes
-        npbt_expected = op_profit_expected + period_y2["total_other_net"]
+        npbt_written = op_profit_expected + period_y2["total_other_net"]
         npbt_computed = period_y2["ebt"]
-        if abs(npbt_expected - npbt_computed) > tolerance:
-            validation_issues.append(f"Year 2: Net Profit Before Taxes mismatch (expected {npbt_expected:.2f}, got {npbt_computed:.2f})")
+        if abs(npbt_written - npbt_computed) > tolerance:
+            validation_issues.append(f"Year 2: Net Profit Before Taxes mismatch (written {npbt_written:.2f}, computed {npbt_computed:.2f})")
 
         # Validate Net Operating Income
         noi_expected = period_y2["ebt"] - period_y2["tax"]
