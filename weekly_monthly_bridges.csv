@@ -1,9 +1,0 @@
-Revenue_Type,Weekly,Monthly_Avg,Annual,Scaling_Method
-Court,7908.523999999999,34402.079399999995,411243.24799999996,weeks_per_month
-League,4873.5,18681.75,224181.0,league_weeks
-Corporate,0,10880.0,130560.0,events_per_month
-Tournament,0,1200.0,14400.0,per_quarter/4
-Retail,0,240.0,2880.0,monthly_sales
-Membership,0,37169.99999999999,446039.9999999999,per_member_month
-Total_Variable,12782.024,65272.020666666656,783264.2479999999,mixed
-Total,12782.024,102442.02066666663,1229304.2479999997,all

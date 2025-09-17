@@ -45,17 +45,47 @@ def build_financial_statements(cfg: Config):
         total_revenue = m["rev_total"]
         variable_revenue = m["rev_variable"]
         
-        # COGS (variable costs + staff)
-        variable_costs = m["variable_costs_m"]
-        staff_costs = m["staff_costs_m"]
-        cogs = variable_costs + staff_costs
+        # COGS (variable costs + variable hourly labor ONLY)
+        variable_costs = m["variable_costs_m"]  # % of revenue
+        cogs_variable_labor = m["staff_costs_m"]  # Hourly labor based on utilization
+        # IMPORTANT: No salaried/admin staff in COGS - they're in Opex
+        cogs = variable_costs + cogs_variable_labor
         
         # Gross Profit
         gross_profit = total_revenue - cogs
-        
+
         # Operating Expenses (fixed)
         fixed_opex = m["fixed_opex_m"]
-        
+        # Get rent separately if available
+        rent = m.get("rent_m", 0)
+        non_rent_fixed = m.get("non_rent_fixed_m", fixed_opex - rent)
+
+        # Allocate non_rent_fixed to detailed categories using FinanceConfig
+        opex_details = {}
+        for category, pct in cfg.finance.opex_allocations.items():
+            opex_details[f"opex_{category}"] = non_rent_fixed * pct
+
+        # Split payroll for banker template
+        # This is ONLY salaried/admin staff - variable labor is in COGS
+        total_payroll = opex_details.get('opex_payroll', 0)
+        opex_payroll_salary = total_payroll * cfg.finance.payroll_split_salary_pct
+        opex_payroll_taxes = total_payroll * cfg.finance.payroll_split_taxes_pct
+
+        # Split professional fees for banker template (Outside Services vs Accounting/Legal)
+        total_prof_fees = opex_details.get('opex_professional_fees', 0)
+        opex_prof_fees_outside = total_prof_fees * cfg.finance.prof_fees_outside_services_pct
+        opex_prof_fees_accounting = total_prof_fees * cfg.finance.prof_fees_accounting_legal_pct
+
+        # VALIDATION: Ensure no double-counting of labor
+        # Variable labor should only be in COGS, salaried only in Opex
+        if cogs_variable_labor > 0 and opex_payroll_salary > 0:
+            # This is OK - different types of labor
+            # But verify they're not the same values (which would indicate double-counting)
+            if abs(cogs_variable_labor - opex_payroll_salary) < 0.01:
+                raise ValueError(f"Labor double-count detected in month {m['month']}: "
+                               f"COGS variable labor ({cogs_variable_labor:.2f}) matches "
+                               f"Opex salary ({opex_payroll_salary:.2f})")
+
         # EBITDA
         ebitda = gross_profit - fixed_opex
         assert abs(ebitda - m["EBITDA_m"]) < 1.0, f"EBITDA mismatch: {ebitda} vs {m['EBITDA_m']}"
@@ -77,7 +107,7 @@ def build_financial_statements(cfg: Config):
         # EBT
         ebt = ebit - interest
         
-        # Tax calculation with NOL
+        # Tax calculation with NOL and state/federal split
         if ebt > 0 and nol_balance > 0:
             # Use NOL to offset taxable income
             nol_used = min(nol_balance, ebt)
@@ -89,15 +119,19 @@ def build_financial_statements(cfg: Config):
             # Add losses to NOL
             nol_balance += abs(ebt)
             taxable_income = 0
-        
-        tax = taxable_income * cfg.finance.corporate_tax_rate if taxable_income > 0 else 0
+
+        # Calculate state and federal taxes
+        state_tax = taxable_income * cfg.finance.state_tax_rate if taxable_income > 0 else 0
+        federal_tax = (taxable_income - state_tax) * cfg.finance.corporate_tax_rate if taxable_income > state_tax else 0
+        local_tax = taxable_income * cfg.finance.local_tax_rate if taxable_income > 0 else 0
+        tax = state_tax + federal_tax + local_tax
         
         # Net Income
         net_income = ebt - tax
         retained_earnings += net_income
         
-        # Store P&L row
-        pnl_rows.append({
+        # Store P&L row with detailed opex breakdown
+        pnl_row = {
             "month": m["month"],
             "revenue_court": court_rev,
             "revenue_league": league_rev,
@@ -107,19 +141,37 @@ def build_financial_statements(cfg: Config):
             "revenue_membership": membership_rev,
             "revenue_total": total_revenue,
             "cogs_variable": variable_costs,
-            "cogs_staff": staff_costs,
+            "cogs_variable_labor": cogs_variable_labor,  # Renamed for clarity
             "cogs_total": cogs,
             "gross_profit": gross_profit,
             "opex_fixed": fixed_opex,
+            "rent": rent,
+            "non_rent_fixed": non_rent_fixed,
+            # Detailed opex breakdown
+            "opex_payroll_salary": opex_payroll_salary,
+            "opex_payroll_taxes": opex_payroll_taxes,
+            "opex_utilities": opex_details.get('opex_utilities', 0),
+            "opex_insurance": opex_details.get('opex_insurance', 0),
+            "opex_marketing": opex_details.get('opex_marketing', 0),
+            "opex_software": opex_details.get('opex_software', 0),
+            "opex_professional_fees": opex_details.get('opex_professional_fees', 0),  # Total
+            "opex_prof_fees_outside": opex_prof_fees_outside,  # Split for Outside Services
+            "opex_prof_fees_accounting": opex_prof_fees_accounting,  # Split for Accounting/Legal
+            "opex_repairs_maintenance": opex_details.get('opex_repairs_maintenance', 0),
+            "opex_other": opex_details.get('opex_other_opex', 0),
             "ebitda": ebitda,
             "depreciation": depreciation,
             "ebit": ebit,
             "interest": interest,
             "ebt": ebt,
             "tax": tax,
+            "tax_federal": federal_tax,
+            "tax_state": state_tax,
+            "tax_local": local_tax,
             "net_income": net_income,
             "nol_balance": nol_balance
-        })
+        }
+        pnl_rows.append(pnl_row)
         
         # --- Balance Sheet Construction (End of Month) ---
         

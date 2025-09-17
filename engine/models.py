@@ -147,6 +147,7 @@ class FinanceConfig:
     apr: float = 0.09  # Reduced from 0.11 to 0.09
     term_years: int = 10
     wc_reserve_start: float = 200_000.0  # Working capital reserve start
+    constants_version: int = 1  # Version for cache invalidation
     
     # Capital expenditure
     leasehold_improvements: float = 994_000.0  # Courts, buildout
@@ -156,7 +157,35 @@ class FinanceConfig:
     
     # Tax
     corporate_tax_rate: float = 0.21  # 21% federal
+    state_tax_rate: float = 0.06  # 6% state (Virginia)
+    local_tax_rate: float = 0.0  # 0% local (Richmond)
     nol_carryforward_start: float = 0.0  # Starting NOL balance
+
+    # Payroll split for banker template display
+    payroll_split_salary_pct: float = 0.6  # % of total payroll that's base salary
+    payroll_split_taxes_pct: float = 0.4  # % that's taxes/benefits
+
+    # Operating expense allocations from non_rent_fixed
+    # These percentages must sum to 1.0
+    opex_allocations: dict = None
+
+    # Professional fees split between Outside Services and Accounting/Legal
+    # These percentages must sum to 1.0
+    prof_fees_outside_services_pct: float = 0.5  # % allocated to Outside Services
+    prof_fees_accounting_legal_pct: float = 0.5  # % allocated to Accounting and Legal
+
+    def __post_init__(self):
+        if self.opex_allocations is None:
+            self.opex_allocations = {
+                'payroll': 0.55,  # Staff/management salaries
+                'utilities': 0.12,
+                'insurance': 0.08,
+                'marketing': 0.08,
+                'software': 0.05,
+                'professional_fees': 0.04,
+                'repairs_maintenance': 0.04,
+                'other_opex': 0.04
+            }
 
 @dataclass
 class Config:

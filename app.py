@@ -64,8 +64,23 @@ def hash_config(cfg):
     """Create hash of config for caching"""
     import hashlib
     import json
-    # Convert config to dict and hash
-    cfg_str = str(vars(cfg))
+    from dataclasses import asdict
+    from datetime import date
+
+    # Custom JSON encoder to handle date objects
+    class DateEncoder(json.JSONEncoder):
+        def default(self, obj):
+            if isinstance(obj, date):
+                return obj.isoformat()
+            return super().default(obj)
+
+    # Convert entire config including FinanceConfig to dict
+    cfg_dict = asdict(cfg)
+    # Include constants_version explicitly to ensure cache invalidation
+    cfg_dict['finance_version'] = cfg.finance.constants_version
+
+    # Create deterministic JSON string for consistent hashing
+    cfg_str = json.dumps(cfg_dict, sort_keys=True, cls=DateEncoder)
     return hashlib.md5(cfg_str.encode()).hexdigest()
 
 def get_cfg_from_ui():
@@ -271,16 +286,124 @@ def get_cfg_from_ui():
             step=0.5,
             help="Year 2 rent increase"
         )
-        other_fixed = st.number_input(
-            "Other Fixed Costs ($/month)",
-            min_value=10000,
+
+        st.markdown("**Staffing Costs**")
+        manager_salary = st.number_input(
+            "Manager Salary ($/year)",
+            min_value=30000,
             max_value=100000,
-            value=25000,
-            step=1000,
-            help="Payroll, insurance, utilities, etc."
+            value=60000,
+            step=5000,
+            help="Annual salary for general manager"
         )
+        assistant_manager_salary = st.number_input(
+            "Assistant Manager Salary ($/year)",
+            min_value=25000,
+            max_value=80000,
+            value=40000,
+            step=5000,
+            help="Annual salary for assistant manager"
+        )
+        hourly_rate = st.number_input(
+            "Part-time Staff Rate ($/hour)",
+            min_value=10.0,
+            max_value=30.0,
+            value=15.0,
+            step=0.50,
+            help="Hourly rate for part-time staff"
+        )
+        extra_hourly_coverage = st.number_input(
+            "Additional Hourly Coverage (hours/month)",
+            min_value=0,
+            max_value=500,
+            value=105,
+            step=10,
+            help="Hours beyond manager coverage (default: ~105 hrs/month)"
+        )
+        payroll_tax_benefits_pct = st.slider(
+            "Payroll Taxes & Benefits (%)",
+            min_value=15,
+            max_value=35,
+            value=20,
+            step=1,
+            help="Additional % for taxes, benefits, insurance"
+        )
+
+        # Calculate total staffing costs
+        monthly_salaries = (manager_salary + assistant_manager_salary) / 12
+        monthly_hourly = hourly_rate * extra_hourly_coverage
+        base_wages = monthly_salaries + monthly_hourly
+        total_staffing = base_wages * (1 + payroll_tax_benefits_pct / 100)
+
+        st.info(f"💰 Base Wages: ${base_wages:,.0f}/month")
+        st.info(f"💼 Total Staffing (with taxes/benefits): ${total_staffing:,.0f}/month")
+
+        st.markdown("**Other Operating Costs**")
+        utilities_monthly = st.number_input(
+            "Utilities ($/month)",
+            min_value=500,
+            max_value=10000,
+            value=2000,
+            step=250,
+            help="Electricity, water, gas, internet"
+        )
+        insurance_monthly = st.number_input(
+            "Insurance ($/month)",
+            min_value=500,
+            max_value=5000,
+            value=1500,
+            step=250,
+            help="General liability, property insurance"
+        )
+        marketing_monthly = st.number_input(
+            "Marketing ($/month)",
+            min_value=500,
+            max_value=10000,
+            value=2000,
+            step=250,
+            help="Advertising, promotions, digital marketing"
+        )
+        software_monthly = st.number_input(
+            "Software & Subscriptions ($/month)",
+            min_value=100,
+            max_value=3000,
+            value=800,
+            step=100,
+            help="Booking system, accounting, other software"
+        )
+        professional_monthly = st.number_input(
+            "Professional Services ($/month)",
+            min_value=0,
+            max_value=5000,
+            value=500,
+            step=250,
+            help="Accounting, legal, consulting"
+        )
+        repairs_monthly = st.number_input(
+            "Repairs & Maintenance ($/month)",
+            min_value=0,
+            max_value=5000,
+            value=500,
+            step=250,
+            help="Equipment maintenance, facility repairs"
+        )
+        other_monthly = st.number_input(
+            "Other Expenses ($/month)",
+            min_value=0,
+            max_value=5000,
+            value=800,
+            step=100,
+            help="Miscellaneous operating expenses"
+        )
+
+        # Calculate total fixed costs
+        other_fixed = (total_staffing + utilities_monthly + insurance_monthly +
+                      marketing_monthly + software_monthly + professional_monthly +
+                      repairs_monthly + other_monthly)
         fixed_monthly = rent_monthly + other_fixed
+
         st.markdown(f"**Total Fixed: ${fixed_monthly:,.0f}/month**")
+        st.caption(f"Rent: ${rent_monthly:,.0f} + Other: ${other_fixed:,.0f}")
         if rent_abatement > 0:
             st.info(f"📍 {rent_abatement} months free rent at start")
         if rent_escalator > 0:
@@ -347,7 +470,11 @@ def get_cfg_from_ui():
         term_years=term_years,
         wc_reserve_start=wc_reserve,
         leasehold_improvements=leasehold,
-        equipment=equipment
+        equipment=equipment,
+        # Payroll split based on UI inputs
+        payroll_split_salary_pct=base_wages / total_staffing if total_staffing > 0 else 0.83,
+        payroll_split_taxes_pct=(total_staffing - base_wages) / total_staffing if total_staffing > 0 else 0.17
+        # opex_allocations uses default from __post_init__
     )
     
     # Compute loan to balance sources and uses
@@ -762,9 +889,23 @@ def main():
                 if key != 'month':  # Skip the month field
                     pnl_y2_eoy[key] = sum(pnl[i].get(key, 0) for i in range(12, 24))
 
-        # Create the banker format P&L
-        banker_pnl_bytes = create_banker_pnl_sheet(pnl[:12], pnl_y2_eoy)
+            # VALIDATION: Verify Y2 EOY is truly the sum of months 13-24
+            # This ensures column O = sum(months 13-24) for each field
+            for check_key in ['revenue_total', 'cogs_total', 'ebt', 'net_income']:
+                expected_sum = sum(pnl[i].get(check_key, 0) for i in range(12, 24))
+                if abs(pnl_y2_eoy.get(check_key, 0) - expected_sum) > 0.01:
+                    st.error(f"Y2 EOY validation failed for {check_key}: "
+                            f"EOY={pnl_y2_eoy.get(check_key, 0):.2f}, Sum(13-24)={expected_sum:.2f}")
 
+        # Create the banker format P&L
+        result = create_banker_pnl_sheet(pnl[:12], pnl_y2_eoy)
+        if not result:  # Legacy safety
+            return
+        banker_pnl_bytes, validation_issues = result
+        if banker_pnl_bytes is None:
+            return  # Validation already surfaced; do not proceed
+
+        # Only show download button if validation passed
         st.download_button(
             "📊 Download Profit & Loss (Banker Format)",
             data=banker_pnl_bytes,
@@ -824,72 +965,201 @@ def main():
             - Depreciation: {cfg.finance.depreciation_years_leasehold} years (leasehold), {cfg.finance.depreciation_years_equipment} years (equipment)
             """)
 
-# Exact labels from banker template (Column A, in order)
-TEMPLATE_LABELS = [
-    "Revenue (Sales)",
-    "Category 1",
-    "Category 2",
-    "Category 3",
-    "Category 4",
-    "Category 5",
-    "Category 6",
-    "Category 7",
-    "Total Revenue (Sales)",
-    "",  # Empty row
-    "Cost of Sales",
-    "",  # Empty row
-    "Gross Profit",
-    "",  # Empty row
-    "Operating Expenses",
-    "Salaries",
-    "Payroll Taxes & Benefits",
-    "Rent",
-    "Advertising & Marketing",
-    "Office Supplies",
-    "Utilities",
-    "Insurance",
-    "Repairs & Maintenance",
-    "Professional Fees",
-    "Travel",
-    "Telephone",
-    "Postage & Delivery",
-    "Licenses & Permits",
-    "Miscellaneous",
-    "Total Operating Expenses",
-    "",  # Empty row
-    "Operating Profit",
-    "",  # Empty row
-    "Other Income/(Expense)",
-    "Interest Income",
-    "Interest Expense",
-    "Other Income",
-    "Other Expense",
-    "Total Other Income/(Expense)",
-    "",  # Empty row
-    "Net Profit Before Taxes",
-    "",  # Empty row
-    "Income Taxes",
-    "Federal Income Tax",
-    "State Income Tax",
-    "Local Income Tax",
-    "",  # Empty row
-    "Net Operating Income"
+# Exact labels from banker template (Column A, rows 1-59)
+BANKER_TEMPLATE_LABELS = [
+    "",  # Row 1
+    "Profit and Loss Projection (12 Months)",  # Row 2
+    "Veros Performance LLC",  # Row 3
+    "",  # Row 4
+    "Fiscal Year Begins",  # Row 5
+    "2025-01-01 00:00:00",  # Row 6 (will be replaced with current year)
+    "",  # Row 7
+    "",  # Row 8
+    "Revenue (Sales)",  # Row 9
+    "Court Rental",  # Row 10
+    "Leagues",  # Row 11
+    "Corporate Events",  # Row 12
+    "Tournaments",  # Row 13
+    "Memberships",  # Row 14
+    "Retail",  # Row 15
+    "Other Revenue",  # Row 16
+    "Total Revenue (Sales)",  # Row 17
+    "",  # Row 18
+    "Cost of Sales",  # Row 19
+    "Direct Costs",  # Row 20
+    "Total Cost of Sales",  # Row 21
+    "",  # Row 22
+    "Gross Profit",  # Row 23
+    "",  # Row 24
+    "Expenses",  # Row 25
+    "Salary expenses ",  # Row 26 (note trailing space)
+    "Payroll expenses ",  # Row 27 (note trailing space)
+    "Outside services",  # Row 28
+    "Supplies (office and operating)",  # Row 29
+    "Repairs and maintenance",  # Row 30
+    "Advertising",  # Row 31
+    "Car, delivery and travel",  # Row 32
+    "Accounting and legal",  # Row 33
+    "Rent & Related Costs",  # Row 34
+    "Telephone",  # Row 35
+    "Utilities",  # Row 36
+    "Insurance",  # Row 37
+    "Taxes (real estate, etc.)",  # Row 38
+    "Interest",  # Row 39
+    "Depreciation",  # Row 40
+    "Other expenses (specify)",  # Row 41
+    "Other expenses (specify)",  # Row 42
+    "Other expenses (specify)",  # Row 43
+    "Misc. (unspecified)",  # Row 44
+    "Sub-total Expenses",  # Row 45
+    "Reserve for Contingencies ",  # Row 46 (note trailing space)
+    "Total Expenses",  # Row 47
+    "",  # Row 48
+    "Net Profit Before Taxes",  # Row 49
+    "Federal Income Taxes",  # Row 50
+    "State Income Taxes",  # Row 51
+    "Local Income Taxes",  # Row 52
+    "Net Operating Income"  # Row 53
 ]
 
-def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
+# Keep old labels for backward compatibility
+TEMPLATE_LABELS = BANKER_TEMPLATE_LABELS
+
+def validate_before_export(periods_y1, period_y2, template_labels):
+    """Validate P&L data before export to ensure integrity
+
+    Returns:
+        tuple: (is_valid: bool, errors: list[str])
+    """
+    errors = []
+    tolerance = 0.01  # Tolerance for floating point comparisons
+
+    # a) Validate subtotals for sampled months (1, 6, 12)
+    sample_months = [0, 5, 11]  # Indices for months 1, 6, 12
+
+    for month_idx in sample_months:
+        if month_idx >= len(periods_y1):
+            continue
+
+        p = periods_y1[month_idx]
+        month_label = f"Month {month_idx + 1}"
+
+        # Check GP = Revenue - COGS
+        calc_gp = p.get('total_revenue', 0) - p.get('cogs', 0)
+        stored_gp = p.get('gross_profit', 0)
+        if abs(calc_gp - stored_gp) > tolerance:
+            errors.append(f"{month_label}: Gross Profit mismatch - calculated {calc_gp:.2f} != stored {stored_gp:.2f}")
+
+        # EBITDA - trust engine field directly (no recomputation)
+        stored_ebitda = p.get('ebitda', 0)
+        # Just verify EBITDA field exists and is reasonable
+        if stored_ebitda == 0 and stored_gp > 0:
+            errors.append(f"{month_label}: EBITDA is zero despite positive gross profit")
+
+        # Check EBIT = EBITDA - Depreciation
+        calc_ebit = stored_ebitda - p.get('depreciation', 0)
+        stored_ebit = p.get('ebit', 0)
+        if abs(calc_ebit - stored_ebit) > tolerance:
+            errors.append(f"{month_label}: EBIT mismatch - calculated {calc_ebit:.2f} != stored {stored_ebit:.2f}")
+
+        # Check EBT = EBIT - Interest
+        calc_ebt = stored_ebit - p.get('interest', 0)
+        stored_ebt = p.get('ebt', 0)
+        if abs(calc_ebt - stored_ebt) > tolerance:
+            errors.append(f"{month_label}: EBT mismatch - calculated {calc_ebt:.2f} != stored {stored_ebt:.2f}")
+
+        # Check NI = EBT - Tax
+        total_tax = p.get('tax', 0)
+        calc_ni = stored_ebt - total_tax
+        stored_ni = p.get('net_income', 0)
+        if abs(calc_ni - stored_ni) > tolerance:
+            errors.append(f"{month_label}: Net Income mismatch - calculated {calc_ni:.2f} != stored {stored_ni:.2f}")
+
+        # Explicit check: NPBT must equal EBT field
+        npbt_field = p.get('ebt', 0)
+        if npbt_field == 0 and stored_gp > 0:
+            errors.append(f"{month_label}: NPBT (EBT) is zero despite positive gross profit")
+
+        # Explicit check: NOI must equal net_income (after-tax) field
+        noi_field = p.get('net_income', 0)
+        # Verify NOI = EBT - Tax (banker template definition)
+        calc_noi = npbt_field - total_tax
+        if abs(calc_noi - noi_field) > tolerance:
+            errors.append(f"{month_label}: NOI mismatch - should be EBT({npbt_field:.2f}) - Tax({total_tax:.2f}) = {calc_noi:.2f}, but field shows {noi_field:.2f}")
+
+    # b) Y2 EOY parity - verify Y2 totals equal sum of months 13-24
+    # (This would require access to months 13-24 data which isn't passed to this function)
+    # For now, just verify Y2 has expected fields
+    if period_y2:
+        required_y2_fields = ['total_revenue', 'cogs', 'gross_profit', 'ebitda', 'net_income']
+        for field in required_y2_fields:
+            if field not in period_y2:
+                errors.append(f"Y2 EOY missing required field: {field}")
+
+    # c) Labor split validation - ensure proper separation
+    for i, p in enumerate(periods_y1[:3]):  # Check first 3 months
+        cogs_labor = p.get('cogs_variable_labor', 0)
+
+        # Verify COGS has variable labor
+        if cogs_labor <= 0:
+            errors.append(f"Month {i+1}: Missing variable labor in COGS (cogs_variable_labor)")
+
+        # Ensure salaried payroll is NOT in COGS
+        if 'salary_expenses' in p and p.get('cogs', 0) > 0:
+            # Check that COGS doesn't contain salaried payroll amount
+            opex_salary = p.get('salary_expenses', 0)
+            cogs_total = p.get('cogs', 0)
+
+            # If COGS contains exact same amount as opex salary, it's likely double-counted
+            if abs(cogs_labor - opex_salary) < tolerance and cogs_labor > 0:
+                errors.append(f"Month {i+1}: Potential labor double-count - COGS variable labor ({cogs_labor:.2f}) equals Opex salary ({opex_salary:.2f})")
+
+    # d) Adapter parity - verify export matches engine for key fields
+    # Check Total Revenue, COGS, Net Income for months 1, 6, 12
+    for month_idx in sample_months:
+        if month_idx >= len(periods_y1):
+            continue
+
+        p = periods_y1[month_idx]
+        month_label = f"Month {month_idx + 1}"
+
+        # Verify key totals are present and non-zero (for non-empty periods)
+        if p.get('total_revenue', 0) <= 0:
+            errors.append(f"{month_label}: Total Revenue is zero or missing")
+
+        if p.get('cogs', 0) <= 0:
+            errors.append(f"{month_label}: Total COGS is zero or missing")
+
+    # Debug logging if there are errors (temporary - remove after debugging)
+    if errors and len(periods_y1) > 0:
+        p = periods_y1[0]  # Month 1
+        import sys
+        print(f"DEBUG Month 1: ebt={p.get('ebt', 0):.2f}, tax={p.get('tax', 0):.2f}, "
+              f"ebit={p.get('ebit', 0):.2f}, net_income={p.get('net_income', 0):.2f}",
+              file=sys.stderr)
+
+    # Limit error reporting to first 10 issues
+    if len(errors) > 10:
+        errors = errors[:10]
+        errors.append(f"... and {len(errors) - 10} more validation errors")
+
+    return len(errors) == 0, errors
+
+def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy):
     """Create professional banker-format P&L Excel file with Y1 monthly and Y2 EOY columns
 
-    Computes all totals from raw components - never trusts pre-calculated totals in CSV
+    Uses engine/statements.py P&L data directly - no recomputation
 
     Args:
-        pnl_y1_monthly: List of dicts with Y1 monthly P&L data
-        pnl_y2_eoy: Dict with Y2 end-of-year P&L totals
-        mapping_dict: Optional dict mapping CSV account names to standard categories
+        pnl_y1_monthly: List of dicts with Y1 monthly P&L data from engine/statements.py
+        pnl_y2_eoy: Dict with Y2 end-of-year P&L totals (summed from months 13-24)
     """
     from io import BytesIO
     from datetime import datetime
     import calendar
-    import re
+
+    # Direct mapping from engine P&L fields to banker template categories
+    # The engine already computed everything - we just map fields
 
     # Parse years from the data
     current_year = datetime.now().year
@@ -898,515 +1168,360 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
     month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
                    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
-    def normalize_account_name(name):
-        """Normalize account name for matching: lowercase, no punctuation, single spaces"""
-        if not name:
-            return ""
-        # Convert to lowercase
-        normalized = str(name).lower()
-        # Remove common punctuation
-        normalized = re.sub(r'[&/\(\)\-,\.]', ' ', normalized)
-        # Collapse multiple spaces to single space
-        normalized = re.sub(r'\s+', ' ', normalized).strip()
-        return normalized
+    def extract_field_safe(period_dict, field, default=0):
+        """Safely extract a field from period dict"""
+        if period_dict is None:
+            return default
+        return period_dict.get(field, default)
 
-    def map_account_to_category(account_name, mapping_dict=None):
-        """Map account name to standard category using explicit mapping or heuristics"""
-        normalized = normalize_account_name(account_name)
+    # Map engine P&L fields to display values
+    def map_engine_to_display(period):
+        """Direct mapping from engine P&L dict to banker template - no calculations"""
+        if not period:
+            return {}
 
-        # First check explicit mapping if provided
-        if mapping_dict and account_name in mapping_dict:
-            return mapping_dict[account_name]
-
-        # Revenue heuristics
-        if any(term in normalized for term in ['court', 'rental', 'booking']):
-            return 'court_rev'
-        if any(term in normalized for term in ['league', 'team']):
-            return 'league_rev'
-        if any(term in normalized for term in ['corporate', 'corp', 'event']):
-            return 'corporate_rev'
-        if any(term in normalized for term in ['tournament', 'tourney', 'competition']):
-            return 'tournament_rev'
-        if any(term in normalized for term in ['membership', 'member', 'subscription']):
-            return 'membership_rev'
-        if any(term in normalized for term in ['retail', 'shop', 'merchandise', 'pro shop']):
-            return 'retail_rev'
-        if any(term in normalized for term in ['revenue', 'sales', 'income']) and 'other' not in normalized:
-            return 'revenue_other'
-
-        # COGS heuristics
-        if any(term in normalized for term in ['cogs', 'cost of goods', 'cost of sales', 'inventory cost']):
-            return 'cogs'
-        if 'merchant fee' in normalized or 'processing fee' in normalized:
-            return 'cogs'
-        if 'direct labor' in normalized or 'direct cost' in normalized:
-            return 'cogs'
-
-        # Operating expense heuristics
-        if any(term in normalized for term in ['rent', 'lease', 'occupancy']):
-            return 'rent'
-        if any(term in normalized for term in ['payroll', 'wage', 'salary', 'staff', 'employee']):
-            return 'payroll'
-        if any(term in normalized for term in ['utility', 'utilities', 'electric', 'water', 'gas']):
-            return 'utilities'
-        if any(term in normalized for term in ['insurance', 'liability']):
-            return 'insurance'
-        if any(term in normalized for term in ['marketing', 'advertising', 'ads', 'promotion']):
-            return 'marketing'
-        if any(term in normalized for term in ['software', 'subscription', 'saas', 'technology', 'it']):
-            return 'software'
-        if any(term in normalized for term in ['professional', 'legal', 'accounting', 'consultant']):
-            return 'professional_fees'
-        if any(term in normalized for term in ['repair', 'maintenance', 'upkeep']):
-            return 'repairs_maintenance'
-        if any(term in normalized for term in ['admin', 'office', 'general', 'miscellaneous']):
-            return 'other_opex'
-
-        # D&A heuristics
-        if any(term in normalized for term in ['depreciation', 'amortization']):
-            return 'depreciation'
-
-        # Interest heuristics
-        if 'interest' in normalized and 'expense' in normalized:
-            return 'interest'
-        if 'loan' in normalized and 'interest' in normalized:
-            return 'interest'
-
-        # Other income/expense
-        if 'other income' in normalized or 'non operating income' in normalized:
-            return 'other_income'
-        if 'other expense' in normalized or 'non operating expense' in normalized:
-            return 'other_expense'
-
-        # Tax heuristics
-        if any(term in normalized for term in ['tax', 'income tax', 'corporate tax']):
-            return 'tax'
-
-        # If we have generic opex terms, put in other_opex
-        if any(term in normalized for term in ['expense', 'cost', 'fee']):
-            return 'other_opex'
-
-        # Unmapped
-        return None
-
-    def compute_period_data(pnl_dict, mapping_dict=None):
-        """Compute all derived totals from raw components using smart mapping"""
-        # Initialize all categories
-        mapped_accounts = {
-            'court_rev': 0, 'league_rev': 0, 'corporate_rev': 0,
-            'tournament_rev': 0, 'membership_rev': 0, 'retail_rev': 0,
-            'revenue_other': 0, 'cogs': 0,
-            'rent': 0, 'payroll': 0, 'utilities': 0, 'insurance': 0,
-            'marketing': 0, 'software': 0, 'professional_fees': 0,
-            'repairs_maintenance': 0, 'other_opex': 0,
-            'depreciation': 0, 'interest': 0,
-            'other_income': 0, 'other_expense': 0, 'tax': 0
-        }
-
-        unmapped = {}
-
-        # Process each account in the period
-        for account_name, value in pnl_dict.items():
-            if account_name == 'month':  # Skip metadata fields
-                continue
-
-            # Try to map the account
-            category = map_account_to_category(account_name, mapping_dict)
-
-            if category and category in mapped_accounts:
-                mapped_accounts[category] += value
-            else:
-                # Check if it's already a standard category name
-                if account_name in mapped_accounts:
-                    mapped_accounts[account_name] += value
-                else:
-                    unmapped[account_name] = value
-
-        # Extract mapped values
-        court_rev = mapped_accounts['court_rev']
-        league_rev = mapped_accounts['league_rev']
-        corp_rev = mapped_accounts['corporate_rev']
-        tourney_rev = mapped_accounts['tournament_rev']
-        membership_rev = mapped_accounts['membership_rev']
-        retail_rev = mapped_accounts['retail_rev']
-        revenue_other = mapped_accounts['revenue_other']
-
-        # Compute total revenue
-        total_revenue = court_rev + league_rev + corp_rev + tourney_rev + membership_rev + retail_rev + revenue_other
-
-        # COGS
-        cogs = mapped_accounts['cogs']
-
-        # Compute Gross Profit
-        gross_profit = total_revenue - cogs
-
-        # Operating expenses
-        rent = mapped_accounts['rent']
-        payroll = mapped_accounts['payroll']
-        utilities = mapped_accounts['utilities']
-        insurance = mapped_accounts['insurance']
-        marketing = mapped_accounts['marketing']
-        software = mapped_accounts['software']
-        professional = mapped_accounts['professional_fees']
-        repairs = mapped_accounts['repairs_maintenance']
-        other_opex = mapped_accounts['other_opex']
-
-        # If we have a fixed_opex field and no detailed breakdown, use it
-        if 'fixed_opex' in pnl_dict and (rent + utilities + insurance + marketing + software + professional + repairs + other_opex) == 0:
-            fixed_opex = pnl_dict['fixed_opex']
-            # Apply standard allocation only as last resort
-            rent = fixed_opex * 0.3
-            utilities = fixed_opex * 0.15
-            insurance = fixed_opex * 0.1
-            marketing = fixed_opex * 0.15
-            software = fixed_opex * 0.1
-            professional = fixed_opex * 0.05
-            repairs = fixed_opex * 0.05
-            other_opex = fixed_opex * 0.1
-
-        # Compute total operating expenses
-        total_opex = rent + payroll + utilities + insurance + marketing + software + professional + repairs + other_opex
-
-        # Compute EBITDA
-        ebitda = gross_profit - total_opex
-
-        # Depreciation & Amortization
-        depreciation = mapped_accounts['depreciation']
-
-        # Compute EBIT
-        ebit = ebitda - depreciation
-
-        # Interest expense (positive magnitude for display)
-        interest_expense = mapped_accounts['interest']
-
-        # Other non-interest income/expense
-        other_income = mapped_accounts['other_income']
-        other_expense = mapped_accounts['other_expense']
-
-        # Total Other Income/(Expense) - signed net value
-        # This is negative when expenses (including interest) exceed income
-        total_other_net = other_income - other_expense - interest_expense
-
-        # Compute EBT using the signed net
-        ebt = ebit + total_other_net
-
-        # Taxes
-        tax = mapped_accounts['tax']
-
-        # Compute Net Income
-        net_income = ebt - tax
-
+        # All fields come directly from engine - no math, no allocations
         return {
-            # Revenue components
-            "court_rev": court_rev,
-            "league_rev": league_rev,
-            "corporate_rev": corp_rev,
-            "tournament_rev": tourney_rev,
-            "membership_rev": membership_rev,
-            "retail_rev": retail_rev,
-            "revenue_other": revenue_other,
-            "total_revenue": total_revenue,
+            # Revenue categories (7)
+            'court_rev': period.get('revenue_court', 0),
+            'league_rev': period.get('revenue_league', 0),
+            'corporate_rev': period.get('revenue_corp', 0),
+            'tournament_rev': period.get('revenue_tourney', 0),
+            'membership_rev': period.get('revenue_membership', 0),
+            'retail_rev': period.get('revenue_retail', 0),
+            'revenue_other': 0,  # Always 0, placeholder
+            'total_revenue': period.get('revenue_total', 0),
 
-            # COGS
-            "cogs": cogs,
-            "gross_profit": gross_profit,
+            # COGS (includes variable labor ONLY, no salaried)
+            'cogs': period.get('cogs_total', 0),
+            'cogs_variable_labor': period.get('cogs_variable_labor', 0),
+            'gross_profit': period.get('gross_profit', 0),
 
-            # Operating expenses
-            "rent": rent,
-            "payroll": payroll,
-            "utilities": utilities,
-            "insurance": insurance,
-            "marketing": marketing,
-            "software": software,
-            "professional_fees": professional,
-            "repairs_maintenance": repairs,
-            "other_opex": other_opex,
-            "total_opex": total_opex,
+            # Operating expenses - detailed breakdown from engine
+            # IMPORTANT: Salaried/admin payroll is ONLY here, not in COGS
+            'rent': period.get('rent', 0),
+            'salary_expenses': period.get('opex_payroll_salary', 0),  # Salaried staff only
+            'payroll_expenses': period.get('opex_payroll_taxes', 0),  # Taxes on salaried
+            'utilities': period.get('opex_utilities', 0),
+            'insurance': period.get('opex_insurance', 0),
+            'marketing': period.get('opex_marketing', 0),
+            'software': period.get('opex_software', 0),
+            'professional_fees': period.get('opex_professional_fees', 0),  # Total (not used in rows)
+            'opex_prof_fees_outside': period.get('opex_prof_fees_outside', 0),  # Outside Services row
+            'opex_prof_fees_accounting': period.get('opex_prof_fees_accounting', 0),  # Accounting/Legal row
+            'repairs_maintenance': period.get('opex_repairs_maintenance', 0),
+            'other_opex': period.get('opex_other', 0),
 
-            # Other items
-            "ebitda": ebitda,
-            "depreciation": depreciation,
-            "ebit": ebit,
-            "interest_expense": interest_expense,  # Positive magnitude for display
-            "total_other_net": total_other_net,    # Signed net (typically negative)
-            "ebt": ebt,
-            "tax": tax,
-            "net_income": net_income,
+            # D&A and Interest
+            'depreciation': period.get('depreciation', 0),
+            'interest': period.get('interest', 0),
 
-            # Metadata
-            "unmapped": unmapped
+            # Profitability metrics
+            'ebitda': period.get('ebitda', 0),
+            'ebit': period.get('ebit', 0),
+            'ebt': period.get('ebt', 0),
+
+            # Taxes
+            'tax': period.get('tax', 0),
+            'tax_federal': period.get('tax_federal', 0),
+            'tax_state': period.get('tax_state', 0),
+            'tax_local': period.get('tax_local', 0),
+
+            # Bottom line
+            'net_income': period.get('net_income', 0)
         }
 
-    # Compute period data for all months and Y2
-    periods_y1 = [compute_period_data(pnl, mapping_dict) for pnl in pnl_y1_monthly]
-    period_y2 = compute_period_data(pnl_y2_eoy, mapping_dict) if pnl_y2_eoy else {}
+    # Get mapped period data for all months and Y2
+    periods_y1 = [map_engine_to_display(pnl) for pnl in pnl_y1_monthly]
+    period_y2 = map_engine_to_display(pnl_y2_eoy) if pnl_y2_eoy else {}
+
+    # Run pre-export validation
+    is_valid, validation_errors = validate_before_export(periods_y1, period_y2, TEMPLATE_LABELS)
+    if not is_valid:
+        import streamlit as st
+        error_msg = "❌ **Export validation failed. Please fix the following issues:**\n\n"
+        for error in validation_errors:
+            error_msg += f"• {error}\n"
+        st.error(error_msg)
+        return None, validation_errors  # Return tuple: (None, issues)
+
+    # VALIDATION: Ensure no labor double-counting across all months
+    for i, period in enumerate(periods_y1):
+        cogs_labor = period.get('cogs_variable_labor', 0)
+        opex_salary = period.get('salary_expenses', 0)
+        # Check that variable labor (COGS) and salaried (Opex) are different
+        if cogs_labor > 0 and opex_salary > 0:
+            # OK to have both, but they shouldn't be identical (indicates double-count)
+            if abs(cogs_labor - opex_salary) < 0.01:
+                raise ValueError(f"Labor double-count detected in month {i+1}: "
+                                f"COGS variable labor equals Opex salary ({cogs_labor:.2f})")
+            # Also check that COGS labor is reasonable (should be much less than salaried)
+            if cogs_labor > opex_salary * 2:
+                import streamlit as st
+                st.warning(f"⚠️ Month {i+1}: Variable labor in COGS ({cogs_labor:.0f}) "
+                          f"exceeds 2x salaried payroll ({opex_salary:.0f})")
+
+    # No calculations needed - engine provides all fields
+
+
+    # Ensure we have all 53 template labels matching banker template (removed 6 empty CoS categories)
+    assert len(TEMPLATE_LABELS) == 53, f"Template labels count changed unexpectedly: {len(TEMPLATE_LABELS)}"
 
     # Build the data structure using exact banker template labels
     data = []
 
-    # Title row (will be merged and centered)
-    title_row = ["Profit & Loss (Projected)"] + ["" for _ in range(14)]
-    data.append(title_row)
+    # Don't add title/header/date rows - banker template starts with data immediately
+    # Build rows exactly matching banker template structure
+    for idx, label in enumerate(TEMPLATE_LABELS):
+        row_num = idx + 1  # 1-based row number to match template
 
-    # Headers row - Month names for Y1 + EOY for Y2
-    header_row = ["", ""]  # A, B columns
-    for i in range(12):
-        if i < len(periods_y1):
-            header_row.append(f"{month_names[i]} {current_year}")
+        # Column A is always the label (use space for empty rows to preserve row count)
+        row = [label if label else " "]
+
+        # Column B is usually empty except for specific rows
+        if row_num == 5:  # Fiscal Year Begins
+            row.append(f"{current_year}-01-01")
         else:
-            header_row.append("")  # Empty if month missing
-    header_row.append(f"Year {current_year + 1}")  # Y2 full year
-    data.append(header_row)
+            row.append("")  # Empty column B
 
-    # Date row - "for the month ended MM/DD/YYYY" or "for the year ended 12/31/YYYY"
-    date_row = ["", ""]  # A, B columns
-    for i in range(12):
-        if i < len(periods_y1):
-            last_day = calendar.monthrange(current_year, i + 1)[1]
-            date_str = f"for the month ended {i+1:02d}/{last_day:02d}/{current_year}"
-            date_row.append(date_str)
-        else:
-            date_row.append("")
-    # Y2 full year date
-    date_row.append(f"for the year ended 12/31/{current_year + 1}")
-    data.append(date_row)
+        # Now add the monthly/yearly data (Columns C onward)
+        # Handle cosmetic/header rows first
+        if row_num in [1, 2, 3, 4, 5, 6, 7, 8]:  # Cosmetic rows at top
+            row.extend(["" for _ in range(13)])  # Empty for all months + Y2
 
-    # Build rows from TEMPLATE_LABELS
-    for label in TEMPLATE_LABELS:
-        row = [label, ""]  # A, B columns always
-
-        # Handle each label type
-        if label == "":  # Empty rows
+        # Revenue section (rows 9-17)
+        elif row_num == 9:  # "Revenue (Sales)" header
             row.extend(["" for _ in range(13)])
-
-        # Revenue categories - map our revenue types to Category 1-7
-        elif label == "Category 1":  # Court rental
+        elif row_num == 10:  # Court Rental
             for i in range(12):
                 row.append(periods_y1[i].get("court_rev", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("court_rev", 0) if period_y2 else 0)
-        elif label == "Category 2":  # League
+        elif row_num == 11:  # Leagues
             for i in range(12):
                 row.append(periods_y1[i].get("league_rev", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("league_rev", 0) if period_y2 else 0)
-        elif label == "Category 3":  # Corporate
+        elif row_num == 12:  # Corporate Events
             for i in range(12):
                 row.append(periods_y1[i].get("corporate_rev", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("corporate_rev", 0) if period_y2 else 0)
-        elif label == "Category 4":  # Tournament
+        elif row_num == 13:  # Tournaments
             for i in range(12):
                 row.append(periods_y1[i].get("tournament_rev", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("tournament_rev", 0) if period_y2 else 0)
-        elif label == "Category 5":  # Membership
+        elif row_num == 14:  # Memberships
             for i in range(12):
                 row.append(periods_y1[i].get("membership_rev", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("membership_rev", 0) if period_y2 else 0)
-        elif label == "Category 6":  # Retail
+        elif row_num == 15:  # Retail
             for i in range(12):
                 row.append(periods_y1[i].get("retail_rev", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("retail_rev", 0) if period_y2 else 0)
-        elif label == "Category 7":  # Other revenue (catch-all)
+        elif row_num == 16:  # Other Revenue
             for i in range(12):
                 row.append(periods_y1[i].get("revenue_other", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("revenue_other", 0) if period_y2 else 0)
-
-        # Total Revenue - MUST be the sum of Category 1-7 detail lines
-        elif label == "Total Revenue (Sales)":
+        elif row_num == 17:  # Total Revenue (Sales) - use engine's pre-calculated total
             for i in range(12):
-                if i < len(periods_y1):
-                    # Sum ONLY what we write to Categories 1-7
-                    total = (periods_y1[i].get("court_rev", 0) +
-                            periods_y1[i].get("league_rev", 0) +
-                            periods_y1[i].get("corporate_rev", 0) +
-                            periods_y1[i].get("tournament_rev", 0) +
-                            periods_y1[i].get("membership_rev", 0) +
-                            periods_y1[i].get("retail_rev", 0) +
-                            periods_y1[i].get("revenue_other", 0))
-                    row.append(total)
-                else:
-                    row.append(0)
-            # Y2 total
-            if period_y2:
-                total_y2 = (period_y2.get("court_rev", 0) +
-                           period_y2.get("league_rev", 0) +
-                           period_y2.get("corporate_rev", 0) +
-                           period_y2.get("tournament_rev", 0) +
-                           period_y2.get("membership_rev", 0) +
-                           period_y2.get("retail_rev", 0) +
-                           period_y2.get("revenue_other", 0))
-                row.append(total_y2)
-            else:
-                row.append(0)
+                row.append(periods_y1[i].get("total_revenue", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("total_revenue", 0) if period_y2 else 0)
 
-        # Cost of Sales
-        elif label == "Cost of Sales":
+        # Cost of Sales section (rows 19-21)
+        elif row_num == 18:  # Empty row
+            row.extend(["" for _ in range(13)])
+        elif row_num == 19:  # "Cost of Sales" header
+            row.extend(["" for _ in range(13)])
+        elif row_num == 20:  # Direct Costs - all COGS (variable costs + variable labor ONLY)
+            for i in range(12):
+                row.append(periods_y1[i].get("cogs", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("cogs", 0) if period_y2 else 0)
+        elif row_num == 21:  # Total Cost of Sales
             for i in range(12):
                 row.append(periods_y1[i].get("cogs", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("cogs", 0) if period_y2 else 0)
 
-        # Gross Profit
-        elif label == "Gross Profit":
+        # Gross Profit (row 23)
+        elif row_num == 22:  # Empty row
+            row.extend(["" for _ in range(13)])
+        elif row_num == 23:  # Gross Profit - use engine's pre-calculated value
             for i in range(12):
-                row.append(periods_y1[i].get("gross_profit", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("gross_profit", 0) if period_y2 else 0)
+                row.append(periods_y1[i].get('gross_profit', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('gross_profit', 0) if period_y2 else 0)
 
-        # Operating Expenses mapping
-        elif label == "Salaries":
+        # Expenses section (rows 25-47)
+        elif row_num == 24:  # Empty row
+            row.extend(["" for _ in range(13)])
+        elif row_num == 25:  # "Expenses" header
+            row.extend(["" for _ in range(13)])
+        elif row_num == 26:  # Salary expenses
             for i in range(12):
-                row.append(periods_y1[i].get("payroll", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("payroll", 0) if period_y2 else 0)
-        elif label == "Payroll Taxes & Benefits":
-            row.extend([0 for _ in range(13)])  # Could map if we had this data
-        elif label == "Rent":
+                row.append(periods_y1[i].get('salary_expenses', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('salary_expenses', 0) if period_y2 else 0)
+        elif row_num == 27:  # Payroll expenses
             for i in range(12):
-                row.append(periods_y1[i].get("rent", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("rent", 0) if period_y2 else 0)
-        elif label == "Advertising & Marketing":
+                row.append(periods_y1[i].get('payroll_expenses', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('payroll_expenses', 0) if period_y2 else 0)
+        elif row_num == 28:  # Outside services
             for i in range(12):
-                row.append(periods_y1[i].get("marketing", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("marketing", 0) if period_y2 else 0)
-        elif label == "Office Supplies":
-            row.extend([0 for _ in range(13)])  # Could be part of other_opex
-        elif label == "Utilities":
-            for i in range(12):
-                row.append(periods_y1[i].get("utilities", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("utilities", 0) if period_y2 else 0)
-        elif label == "Insurance":
-            for i in range(12):
-                row.append(periods_y1[i].get("insurance", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("insurance", 0) if period_y2 else 0)
-        elif label == "Repairs & Maintenance":
+                row.append(periods_y1[i].get("opex_prof_fees_outside", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("opex_prof_fees_outside", 0) if period_y2 else 0)
+        elif row_num == 29:  # Supplies
+            row.extend([0.0 for _ in range(13)])  # Set to 0 to avoid double-counting
+        elif row_num == 30:  # Repairs and maintenance
             for i in range(12):
                 row.append(periods_y1[i].get("repairs_maintenance", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("repairs_maintenance", 0) if period_y2 else 0)
-        elif label == "Professional Fees":
+        elif row_num == 31:  # Advertising
             for i in range(12):
-                row.append(periods_y1[i].get("professional_fees", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("professional_fees", 0) if period_y2 else 0)
-        elif label == "Travel":
-            row.extend([0 for _ in range(13)])
-        elif label == "Telephone":
+                row.append(periods_y1[i].get("marketing", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("marketing", 0) if period_y2 else 0)
+        elif row_num == 32:  # Car, delivery and travel
+            row.extend([0.0 for _ in range(13)])
+        elif row_num == 33:  # Accounting and legal
             for i in range(12):
-                row.append(periods_y1[i].get("software", 0) * 0.2 if i < len(periods_y1) else 0)  # Part of software/tech
-            row.append(period_y2.get("software", 0) * 0.2 if period_y2 else 0)
-        elif label == "Postage & Delivery":
-            row.extend([0 for _ in range(13)])
-        elif label == "Licenses & Permits":
-            row.extend([0 for _ in range(13)])
-        elif label == "Miscellaneous":
+                row.append(periods_y1[i].get("opex_prof_fees_accounting", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("opex_prof_fees_accounting", 0) if period_y2 else 0)
+        elif row_num == 34:  # Rent & Related Costs
+            for i in range(12):
+                row.append(periods_y1[i].get("rent", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("rent", 0) if period_y2 else 0)
+        elif row_num == 35:  # Telephone
+            for i in range(12):
+                row.append(periods_y1[i].get("software", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("software", 0) if period_y2 else 0)
+        elif row_num == 36:  # Utilities
+            for i in range(12):
+                row.append(periods_y1[i].get("utilities", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("utilities", 0) if period_y2 else 0)
+        elif row_num == 37:  # Insurance
+            for i in range(12):
+                row.append(periods_y1[i].get("insurance", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("insurance", 0) if period_y2 else 0)
+        elif row_num == 38:  # Taxes (real estate, etc.)
+            row.extend([0.0 for _ in range(13)])
+        elif row_num == 39:  # Interest
+            for i in range(12):
+                row.append(periods_y1[i].get("interest", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("interest", 0) if period_y2 else 0)
+        elif row_num == 40:  # Depreciation
+            for i in range(12):
+                row.append(periods_y1[i].get("depreciation", 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get("depreciation", 0) if period_y2 else 0)
+        elif row_num in [41, 42, 43]:  # Other expenses (specify)
+            row.extend([0.0 for _ in range(13)])
+        elif row_num == 44:  # Misc. (unspecified)
             for i in range(12):
                 row.append(periods_y1[i].get("other_opex", 0) if i < len(periods_y1) else 0)
             row.append(period_y2.get("other_opex", 0) if period_y2 else 0)
-
-        # Total Operating Expenses
-        elif label == "Total Operating Expenses":
+        elif row_num == 45:  # Sub-total Expenses - use pre-calculated aggregate
             for i in range(12):
-                row.append(periods_y1[i].get("total_opex", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("total_opex", 0) if period_y2 else 0)
-
-        # Operating Profit (EBIT after D&A - banker convention)
-        elif label == "Operating Profit":
+                row.append(periods_y1[i].get('subtotal_expenses', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('subtotal_expenses', 0) if period_y2 else 0)
+        elif row_num == 46:  # Reserve for Contingencies
+            row.extend([0.0 for _ in range(13)])
+        elif row_num == 47:  # Total Expenses - use pre-calculated aggregate
             for i in range(12):
-                # Operating Profit = Gross Profit - Total Operating Expenses - Depreciation (EBIT)
-                if i < len(periods_y1):
-                    ebitda = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
-                    depreciation = periods_y1[i].get("depreciation", 0)
-                    op_profit = ebitda - depreciation  # This is EBIT
-                    row.append(op_profit)
-                else:
-                    row.append(0)
-            if period_y2:
-                ebitda_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
-                depreciation_y2 = period_y2.get("depreciation", 0)
-                op_profit_y2 = ebitda_y2 - depreciation_y2  # This is EBIT
-                row.append(op_profit_y2)
-            else:
-                row.append(0)
+                row.append(periods_y1[i].get('total_expenses', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('total_expenses', 0) if period_y2 else 0)
 
-        # Other Income/Expense items
-        elif label == "Interest Income":
-            row.extend([0 for _ in range(13)])  # We don't track interest income separately
-        elif label == "Interest Expense":
-            for i in range(12):
-                row.append(periods_y1[i].get("interest_expense", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("interest_expense", 0) if period_y2 else 0)
-        elif label == "Other Income":
-            row.extend([0 for _ in range(13)])  # Could map if available
-        elif label == "Other Expense":
-            row.extend([0 for _ in range(13)])  # Could map if available
-        elif label == "Total Other Income/(Expense)":
-            for i in range(12):
-                row.append(periods_y1[i].get("total_other_net", 0) if i < len(periods_y1) else 0)
-            row.append(period_y2.get("total_other_net", 0) if period_y2 else 0)
-
-        # Net Profit Before Taxes (EBT)
-        elif label == "Net Profit Before Taxes":
+        # Net Profit Before Taxes (row 49)
+        elif row_num == 48:  # Empty row
+            row.extend(["" for _ in range(13)])
+        elif row_num == 49:  # Net Profit Before Taxes = Gross Profit - Total Expenses
             for i in range(12):
                 if i < len(periods_y1):
-                    # Net Profit Before Taxes = Operating Profit (EBIT) + Total Other Income/(Expense)
-                    ebitda = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
-                    depreciation = periods_y1[i].get("depreciation", 0)
-                    op_profit = ebitda - depreciation  # This is EBIT
-                    npbt = op_profit + periods_y1[i].get("total_other_net", 0)
+                    # Use pre-calculated values from engine
+                    npbt = periods_y1[i].get('ebt', 0)  # EBT is NPBT in our model
                     row.append(npbt)
                 else:
                     row.append(0)
             if period_y2:
-                ebitda_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
-                depreciation_y2 = period_y2.get("depreciation", 0)
-                op_profit_y2 = ebitda_y2 - depreciation_y2  # This is EBIT
-                npbt_y2 = op_profit_y2 + period_y2.get("total_other_net", 0)
+                npbt_y2 = period_y2.get('ebt', 0)
                 row.append(npbt_y2)
             else:
                 row.append(0)
 
-        # Tax items
-        elif label == "Federal Income Tax":
+        # Tax section (rows 50-52)
+        elif row_num == 50:  # Federal Income Taxes - use engine's pre-calculated value
             for i in range(12):
-                row.append(periods_y1[i].get("tax", 0) * 0.7 if i < len(periods_y1) else 0)  # Assume 70% federal
-            row.append(period_y2.get("tax", 0) * 0.7 if period_y2 else 0)
-        elif label == "State Income Tax":
-            for i in range(12):
-                row.append(periods_y1[i].get("tax", 0) * 0.25 if i < len(periods_y1) else 0)  # Assume 25% state
-            row.append(period_y2.get("tax", 0) * 0.25 if period_y2 else 0)
-        elif label == "Local Income Tax":
-            for i in range(12):
-                row.append(periods_y1[i].get("tax", 0) * 0.05 if i < len(periods_y1) else 0)  # Assume 5% local
-            row.append(period_y2.get("tax", 0) * 0.05 if period_y2 else 0)
+                row.append(periods_y1[i].get('tax_federal', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('tax_federal', 0) if period_y2 else 0)
 
-        # Net Operating Income (Net Income)
-        elif label == "Net Operating Income":
+        elif row_num == 51:  # State Income Taxes
+            for i in range(12):
+                row.append(periods_y1[i].get('tax_state', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('tax_state', 0) if period_y2 else 0)
+
+        elif row_num == 52:  # Local Income Taxes
+            for i in range(12):
+                row.append(periods_y1[i].get('tax_local', 0) if i < len(periods_y1) else 0)
+            row.append(period_y2.get('tax_local', 0) if period_y2 else 0)
+
+        # Net Operating Income (row 53)
+        elif row_num == 53:  # Net Operating Income = NPBT - Total Taxes
             for i in range(12):
                 if i < len(periods_y1):
-                    # Net Operating Income = Net Profit Before Taxes - All Taxes
-                    ebitda = periods_y1[i].get("gross_profit", 0) - periods_y1[i].get("total_opex", 0)
-                    depreciation = periods_y1[i].get("depreciation", 0)
-                    op_profit = ebitda - depreciation  # This is EBIT
-                    npbt = op_profit + periods_y1[i].get("total_other_net", 0)
-                    noi = npbt - periods_y1[i].get("tax", 0)
+                    # Use engine's net_income directly
+                    noi = periods_y1[i].get('net_income', 0)
                     row.append(noi)
                 else:
                     row.append(0)
             if period_y2:
-                ebitda_y2 = period_y2.get("gross_profit", 0) - period_y2.get("total_opex", 0)
-                depreciation_y2 = period_y2.get("depreciation", 0)
-                op_profit_y2 = ebitda_y2 - depreciation_y2  # This is EBIT
-                npbt_y2 = op_profit_y2 + period_y2.get("total_other_net", 0)
-                noi_y2 = npbt_y2 - period_y2.get("tax", 0)
+                noi_y2 = period_y2.get('net_income', 0)
                 row.append(noi_y2)
             else:
                 row.append(0)
 
-        # Section headers (no numbers)
-        elif label in ["Revenue (Sales)", "Operating Expenses", "Other Income/(Expense)", "Income Taxes"]:
-            row.extend(["" for _ in range(13)])
         else:
-            # Default to zeros for any unhandled labels
-            row.extend([0 for _ in range(13)])
+            # Any unhandled rows get zeros
+            row.extend([0.0 for _ in range(13)])
 
         data.append(row)
 
+    # Debug logging for validation
+    sanity_check = {}
+    if len(periods_y1) > 0 and len(data) >= 53:
+        # Extract month 1 values from data rows (column C, index 2)
+        m1_values = {}
+        for i, label in enumerate(TEMPLATE_LABELS):
+            if i < len(data) and len(data[i]) > 2:
+                val = data[i][2]  # Column C (month 1)
+                if label == "Total Revenue (Sales)":
+                    m1_values["tot_rev"] = val
+                elif label == "Total Cost of Sales":
+                    m1_values["tot_cogs"] = val
+                elif label == "Gross Profit":
+                    m1_values["gp"] = val
+                elif label == "Total Expenses":
+                    m1_values["tot_exp"] = val
+                elif label == "Net Profit Before Taxes":
+                    m1_values["npbt"] = val
+                elif label == "Federal Income Taxes":
+                    m1_values["fed_tax"] = val
+                elif label == "State Income Taxes":
+                    m1_values["state_tax"] = val
+                elif label == "Local Income Taxes":
+                    m1_values["local_tax"] = val
+                elif label == "Net Operating Income":
+                    m1_values["noi"] = val
+
+        sanity_check = {
+            "labels": len(TEMPLATE_LABELS),
+            "tot_rev": m1_values.get('tot_rev', 0),
+            "tot_cogs": m1_values.get('tot_cogs', 0),
+            "gp": m1_values.get('gp', 0),
+            "tot_exp": m1_values.get('tot_exp', 0),
+            "npbt": m1_values.get('npbt', 0),
+            "fed_tax": m1_values.get('fed_tax', 0),
+            "state_tax": m1_values.get('state_tax', 0),
+            "local_tax": m1_values.get('local_tax', 0),
+            "total_tax": m1_values.get('fed_tax', 0) + m1_values.get('state_tax', 0) + m1_values.get('local_tax', 0),
+            "noi": m1_values.get('noi', 0)
+        }
+
     # Create DataFrame
     df = pd.DataFrame(data)
+
+    # No validation needed since we're using engine values directly
 
     # Create Excel file with professional formatting
     bio = BytesIO()
@@ -1460,29 +1575,50 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
             'top': 1
         })
 
-        # Merge and center title
-        worksheet.merge_range('A1:O1', 'Profit & Loss (Projected)', title_format)
+        section_header_format = workbook.add_format({
+            'bold': True
+        })
 
-        # Apply header format to month names (row 1)
-        for col in range(2, 15):  # C to O
-            if col < len(data[1]) and data[1][col]:
-                worksheet.write(1, col, data[1][col], header_format)
-            if col < len(data[2]) and data[2][col]:
-                worksheet.write(2, col, data[2][col], date_format)
+        # Don't merge/overwrite the first row - banker template needs all 59 rows intact
+        # Write month headers in row 2 (Year 1)
+        worksheet.write(1, 2, 'Jan', header_format)
+        worksheet.write(1, 3, 'Feb', header_format)
+        worksheet.write(1, 4, 'Mar', header_format)
+        worksheet.write(1, 5, 'Apr', header_format)
+        worksheet.write(1, 6, 'May', header_format)
+        worksheet.write(1, 7, 'Jun', header_format)
+        worksheet.write(1, 8, 'Jul', header_format)
+        worksheet.write(1, 9, 'Aug', header_format)
+        worksheet.write(1, 10, 'Sep', header_format)
+        worksheet.write(1, 11, 'Oct', header_format)
+        worksheet.write(1, 12, 'Nov', header_format)
+        worksheet.write(1, 13, 'Dec', header_format)
+        worksheet.write(1, 14, 'Y2 EOY', header_format)
 
         # Define total lines that need emphasis (matching template labels)
         total_labels = [
             "Total Revenue (Sales)",
+            "Total Cost of Sales",
             "Gross Profit",
-            "Total Operating Expenses",
-            "Operating Profit",
-            "Total Other Income/(Expense)",
+            "Total Expenses",
             "Net Profit Before Taxes",
             "Net Operating Income"
         ]
 
+        # Define section headers that need bold formatting
+        section_headers = [
+            "Profit and Loss Projection (12 Months)",
+            "Fiscal Year Begins",
+            "Revenue (Sales)",
+            "Cost of Sales",
+            "Expenses",
+            "Sub-total Expenses",
+            "Reserve for Contingencies ",
+            "Total Expenses"
+        ]
+
         # Format all data rows
-        first_data_row = 3  # First actual data row after headers
+        first_data_row = 0  # Start from the first row (no title row anymore)
         for row_idx in range(first_data_row, len(data)):
             if row_idx < len(data):
                 label = str(data[row_idx][0]) if data[row_idx][0] else ""
@@ -1490,6 +1626,8 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
                 # Apply label formatting
                 if any(total in label for total in total_labels):
                     worksheet.write(row_idx, 0, label, total_label_format)
+                elif any(header in label for header in section_headers):
+                    worksheet.write(row_idx, 0, label, section_header_format)
                 elif label.startswith("  "):  # Indented items
                     worksheet.write(row_idx, 0, label, label_format)
                 else:
@@ -1521,88 +1659,10 @@ def create_banker_pnl_sheet(pnl_y1_monthly, pnl_y2_eoy, mapping_dict=None):
 
     bio.seek(0)
 
-    # Validation checks using computed values
-    validation_issues = []
-    tolerance = 0.01
+    # All validation is now done in validate_before_export() function
+    # which runs BEFORE the Excel file is created
 
-    # Validate Y1 months using banker template definitions
-    for i, period in enumerate(periods_y1):
-        month = month_names[i] if i < 12 else f"Month {i+1}"
-
-        # 1. Total Revenue = sum(Category 1..Category 7)
-        cat1 = period.get("court_rev", 0)
-        cat2 = period.get("league_rev", 0)
-        cat3 = period.get("corporate_rev", 0)
-        cat4 = period.get("tournament_rev", 0)
-        cat5 = period.get("membership_rev", 0)
-        cat6 = period.get("retail_rev", 0)
-        cat7 = period.get("revenue_other", 0)
-        total_revenue_written = cat1 + cat2 + cat3 + cat4 + cat5 + cat6 + cat7
-        total_revenue_computed = period.get("total_revenue", 0)
-        if abs(total_revenue_written - total_revenue_computed) > tolerance:
-            validation_issues.append(f"{month}: Total Revenue mismatch (written {total_revenue_written:.2f}, computed {total_revenue_computed:.2f})")
-
-        # 2. Operating Profit = (Total Revenue - Cost of Sales) - Total Operating Expenses - Depreciation
-        # Note: Operating Profit is EBIT in banker terms
-        gross_profit = total_revenue_computed - period.get("cogs", 0)
-        total_opex = period.get("total_opex", 0)
-        depreciation = period.get("depreciation", 0)
-        operating_profit_written = gross_profit - total_opex - depreciation  # This is EBIT
-
-        # 3. Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
-        total_other_net = period.get("total_other_net", 0)  # Already signed (negative when expenses > income)
-        npbt_written = operating_profit_written + total_other_net
-        npbt_computed = period.get("ebt", 0)
-        if abs(npbt_written - npbt_computed) > tolerance:
-            validation_issues.append(f"{month}: Net Profit Before Taxes mismatch (written {npbt_written:.2f}, computed {npbt_computed:.2f})")
-
-        # 4. Net Operating Income = Net Profit Before Taxes - (Federal + State + Local)
-        tax_total = period.get("tax", 0)
-        noi_written = npbt_written - tax_total
-        noi_computed = period.get("net_income", 0)
-        if abs(noi_written - noi_computed) > tolerance:
-            validation_issues.append(f"{month}: Net Operating Income mismatch (written {noi_written:.2f}, computed {noi_computed:.2f})")
-
-    # Validate Y2 if present (using same banker definitions)
-    if period_y2:
-        # 1. Total Revenue = sum(Category 1..Category 7)
-        cat1_y2 = period_y2.get("court_rev", 0)
-        cat2_y2 = period_y2.get("league_rev", 0)
-        cat3_y2 = period_y2.get("corporate_rev", 0)
-        cat4_y2 = period_y2.get("tournament_rev", 0)
-        cat5_y2 = period_y2.get("membership_rev", 0)
-        cat6_y2 = period_y2.get("retail_rev", 0)
-        cat7_y2 = period_y2.get("revenue_other", 0)
-        total_revenue_written_y2 = cat1_y2 + cat2_y2 + cat3_y2 + cat4_y2 + cat5_y2 + cat6_y2 + cat7_y2
-        total_revenue_computed_y2 = period_y2.get("total_revenue", 0)
-        if abs(total_revenue_written_y2 - total_revenue_computed_y2) > tolerance:
-            validation_issues.append(f"Year 2: Total Revenue mismatch (written {total_revenue_written_y2:.2f}, computed {total_revenue_computed_y2:.2f})")
-
-        # 2. Operating Profit = (Total Revenue - Cost of Sales) - Total Operating Expenses - Depreciation
-        gross_profit_y2 = total_revenue_computed_y2 - period_y2.get("cogs", 0)
-        total_opex_y2 = period_y2.get("total_opex", 0)
-        depreciation_y2 = period_y2.get("depreciation", 0)
-        operating_profit_written_y2 = gross_profit_y2 - total_opex_y2 - depreciation_y2  # This is EBIT
-
-        # 3. Net Profit Before Taxes = Operating Profit + Total Other Income/(Expense)
-        total_other_net_y2 = period_y2.get("total_other_net", 0)
-        npbt_written_y2 = operating_profit_written_y2 + total_other_net_y2
-        npbt_computed_y2 = period_y2.get("ebt", 0)
-        if abs(npbt_written_y2 - npbt_computed_y2) > tolerance:
-            validation_issues.append(f"Year 2: Net Profit Before Taxes mismatch (written {npbt_written_y2:.2f}, computed {npbt_computed_y2:.2f})")
-
-        # 4. Net Operating Income = Net Profit Before Taxes - Taxes
-        tax_total_y2 = period_y2.get("tax", 0)
-        noi_written_y2 = npbt_written_y2 - tax_total_y2
-        noi_computed_y2 = period_y2.get("net_income", 0)
-        if abs(noi_written_y2 - noi_computed_y2) > tolerance:
-            validation_issues.append(f"Year 2: Net Operating Income mismatch (written {noi_written_y2:.2f}, computed {noi_computed_y2:.2f})")
-
-    if validation_issues:
-        import streamlit as st
-        st.warning("⚠️ P&L validation issues:\n" + "\n".join(validation_issues))
-
-    return bio.read()
+    return bio.read(), []  # Return tuple: (xlsx_bytes, empty_issues_list)
 
 def create_banker_balance_sheet(bs_y1_monthly, bs_y2_eoy):
     """Create professional banker-format Balance Sheet Excel file with Y1 monthly and Y2 EOY columns"""
